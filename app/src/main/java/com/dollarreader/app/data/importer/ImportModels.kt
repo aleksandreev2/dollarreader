@@ -1,5 +1,26 @@
 package com.dollarreader.app.data.importer
 
+data class ImportPreview(
+    val titleId: String,
+    val title: String,
+    val format: String,
+    val totalChapters: Int,
+    val filesSkipped: Int,
+    val updatedExistingTitle: Boolean,
+    val volumes: List<ImportPreviewVolume>,
+)
+
+data class ImportPreviewVolume(
+    val name: String,
+    val chapters: List<ImportPreviewChapter>,
+)
+
+data class ImportPreviewChapter(
+    val name: String,
+    val number: String?,
+    val sourcePath: String,
+)
+
 data class ImportResult(
     val titleId: String,
     val title: String,
