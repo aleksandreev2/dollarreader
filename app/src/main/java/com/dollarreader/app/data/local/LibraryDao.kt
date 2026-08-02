@@ -47,11 +47,17 @@ interface LibraryDao {
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     fun observeTitleWithVolumes(titleId: String): Flow<TitleWithVolumes?>
 
+    @Query("SELECT * FROM chapter_states WHERE titleId = :titleId")
+    fun observeChapterStates(titleId: String): Flow<List<ChapterStateEntity>>
+
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     suspend fun titleById(titleId: String): TitleEntity?
 
     @Query("SELECT * FROM reading_progress WHERE titleId = :titleId LIMIT 1")
     suspend fun progressByTitle(titleId: String): ReadingProgressEntity?
+
+    @Query("SELECT * FROM chapter_states WHERE chapterId = :chapterId LIMIT 1")
+    suspend fun chapterStateById(chapterId: String): ChapterStateEntity?
 
     @Query("SELECT COUNT(*) FROM titles")
     suspend fun titleCount(): Int
@@ -59,14 +65,10 @@ interface LibraryDao {
     @Query("SELECT COUNT(*) FROM chapters WHERE titleId = :titleId")
     suspend fun chapterCount(titleId: String): Int
 
-    @Query(
-        "SELECT * FROM chapters WHERE titleId = :titleId AND sortOrder = :sortOrder LIMIT 1",
-    )
+    @Query("SELECT * FROM chapters WHERE titleId = :titleId AND sortOrder = :sortOrder LIMIT 1")
     suspend fun chapterByOrder(titleId: String, sortOrder: Int): ChapterEntity?
 
-    @Query(
-        "SELECT * FROM chapters WHERE titleId = :titleId AND sortOrder <= :sortOrder ORDER BY sortOrder",
-    )
+    @Query("SELECT * FROM chapters WHERE titleId = :titleId AND sortOrder <= :sortOrder ORDER BY sortOrder")
     suspend fun chaptersUpTo(titleId: String, sortOrder: Int): List<ChapterEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
