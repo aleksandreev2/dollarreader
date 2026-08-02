@@ -5,4 +5,5 @@ data class ReaderChapterContent(
     val title: String,
     val sortOrder: Int,
     val text: String?,
+    val localPath: String? = null,
 )
