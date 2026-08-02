@@ -11,6 +11,9 @@ import com.dollarreader.app.data.local.TitleSummaryRow
 import com.dollarreader.app.data.local.TitleWithVolumes
 import com.dollarreader.app.data.local.VolumeEntity
 import com.dollarreader.app.model.Book
+import com.dollarreader.app.model.BookChapterContents
+import com.dollarreader.app.model.BookContents
+import com.dollarreader.app.model.BookVolumeContents
 import com.dollarreader.app.model.ReaderChapterContent
 import java.io.File
 import kotlin.math.abs
@@ -18,6 +21,7 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
@@ -36,98 +40,102 @@ class LibraryRepository(
     fun observeTitle(titleId: String): Flow<TitleWithVolumes?> =
         dao.observeTitleWithVolumes(titleId)
 
+    fun observeBookContents(titleId: String): Flow<BookContents?> =
+        combine(
+            dao.observeTitleWithVolumes(titleId),
+            dao.observeChapterStates(titleId),
+        ) { title, states ->
+            title?.let { currentTitle ->
+                val stateByChapter = states.associateBy { it.chapterId }
+                BookContents(
+                    volumes = currentTitle.volumes
+                        .sortedBy { it.volume.sortOrder }
+                        .map { volume ->
+                            BookVolumeContents(
+                                id = volume.volume.id,
+                                name = volume.volume.name,
+                                number = volume.volume.number,
+                                sortOrder = volume.volume.sortOrder,
+                                chapters = volume.chapters
+                                    .sortedBy { it.sortOrder }
+                                    .map { chapter ->
+                                        val state = stateByChapter[chapter.id]
+                                        BookChapterContents(
+                                            id = chapter.id,
+                                            title = chapter.name,
+                                            number = chapter.number,
+                                            sortOrder = chapter.sortOrder,
+                                            isRead = state?.isRead == true,
+                                            progress = state?.progress?.coerceIn(0f, 1f) ?: 0f,
+                                        )
+                                    },
+                            )
+                        },
+                )
+            }
+        }
+
+    suspend fun titleExists(titleId: String): Boolean = dao.titleById(titleId) != null
+
     suspend fun seedDemoLibraryIfEmpty() {
         database.withTransaction {
             if (dao.titleCount() != 0) return@withTransaction
 
             val now = System.currentTimeMillis()
             val seeds = listOf(
-                DemoTitle(
-                    id = "solo-leveling",
-                    title = "Поднятие уровня в одиночку",
-                    author = "Чугон",
-                    format = "EPUB",
-                    totalChapters = 200,
-                    currentChapter = 48,
-                    overallProgress = 0.24f,
-                    accentSeed = 0,
-                ),
-                DemoTitle(
-                    id = "omniscient-reader",
-                    title = "Всеведущий читатель",
-                    author = "Sing N Song",
-                    format = "TXT",
-                    totalChapters = 188,
-                    currentChapter = 12,
-                    overallProgress = 0.06f,
-                    accentSeed = 1,
-                ),
-                DemoTitle(
-                    id = "north-blade",
-                    title = "Легенда о северном клинке",
-                    author = "Угак",
-                    format = "FB2",
-                    totalChapters = 96,
-                    currentChapter = 7,
-                    overallProgress = 0.07f,
-                    accentSeed = 2,
-                ),
+                DemoTitle("solo-leveling", "Поднятие уровня в одиночку", "Чугон", "EPUB", 200, 48, 0.24f, 0),
+                DemoTitle("omniscient-reader", "Всеведущий читатель", "Sing N Song", "TXT", 188, 12, 0.06f, 1),
+                DemoTitle("north-blade", "Легенда о северном клинке", "Угак", "FB2", 96, 7, 0.07f, 2),
             )
 
-            val titles = seeds.map { seed ->
-                TitleEntity(
-                    id = seed.id,
-                    title = seed.title,
-                    author = seed.author,
-                    format = seed.format,
-                    sourceType = "demo",
-                    sourceUri = null,
-                    description = null,
-                    coverUri = null,
-                    accentSeed = seed.accentSeed,
-                    isFavorite = false,
-                    createdAt = now,
-                    updatedAt = now,
-                    lastOpenedAt = now - seed.accentSeed * 60_000L,
-                )
-            }
-            val volumes = seeds.map { seed ->
-                VolumeEntity(
-                    id = seed.volumeId,
-                    titleId = seed.id,
-                    name = "Том 1",
-                    number = "1",
-                    sortOrder = 1,
-                )
-            }
-            val chapters = seeds.flatMap { seed ->
-                (1..seed.totalChapters).map { chapterNumber ->
-                    ChapterEntity(
-                        id = seed.chapterId(chapterNumber),
-                        titleId = seed.id,
-                        volumeId = seed.volumeId,
-                        name = "Глава $chapterNumber",
-                        number = chapterNumber.toString(),
-                        sortOrder = chapterNumber,
-                        localUri = null,
-                        contentHash = null,
-                        wordCount = null,
-                        isDownloaded = true,
+            dao.insertTitles(
+                seeds.map { seed ->
+                    TitleEntity(
+                        id = seed.id,
+                        title = seed.title,
+                        author = seed.author,
+                        format = seed.format,
+                        sourceType = "demo",
+                        sourceUri = null,
+                        description = null,
+                        coverUri = null,
+                        accentSeed = seed.accentSeed,
+                        isFavorite = false,
                         createdAt = now,
                         updatedAt = now,
+                        lastOpenedAt = now - seed.accentSeed * 60_000L,
                     )
-                }
-            }
-
-            dao.insertTitles(titles)
-            dao.insertVolumes(volumes)
-            dao.insertChapters(chapters)
+                },
+            )
+            dao.insertVolumes(
+                seeds.map { seed ->
+                    VolumeEntity(seed.volumeId, seed.id, "Том 1", "1", 1)
+                },
+            )
+            dao.insertChapters(
+                seeds.flatMap { seed ->
+                    (1..seed.totalChapters).map { chapterNumber ->
+                        ChapterEntity(
+                            id = seed.chapterId(chapterNumber),
+                            titleId = seed.id,
+                            volumeId = seed.volumeId,
+                            name = "Глава $chapterNumber",
+                            number = chapterNumber.toString(),
+                            sortOrder = chapterNumber,
+                            localUri = null,
+                            contentHash = null,
+                            wordCount = null,
+                            isDownloaded = true,
+                            createdAt = now,
+                            updatedAt = now,
+                        )
+                    }
+                },
+            )
 
             seeds.forEach { seed ->
                 val exactProgress = seed.overallProgress * seed.totalChapters
-                val chapterProgress = (
-                    exactProgress - (seed.currentChapter - 1)
-                ).coerceIn(0f, 1f)
+                val chapterProgress = (exactProgress - (seed.currentChapter - 1)).coerceIn(0f, 1f)
                 dao.upsertReadingProgress(
                     ReadingProgressEntity(
                         titleId = seed.id,
@@ -139,6 +147,16 @@ class LibraryRepository(
                         updatedAt = now,
                     ),
                 )
+                val states = (1 until seed.currentChapter).map { chapterNumber ->
+                    ChapterStateEntity(
+                        chapterId = seed.chapterId(chapterNumber),
+                        titleId = seed.id,
+                        progress = 1f,
+                        isRead = true,
+                        updatedAt = now,
+                    )
+                }
+                if (states.isNotEmpty()) dao.upsertChapterStates(states)
             }
         }
     }
@@ -180,13 +198,7 @@ class LibraryRepository(
 
             dao.upsertVolumes(
                 plan.volumes.map { volume ->
-                    VolumeEntity(
-                        id = volume.id,
-                        titleId = plan.id,
-                        name = volume.name,
-                        number = volume.number,
-                        sortOrder = volume.sortOrder,
-                    )
+                    VolumeEntity(volume.id, plan.id, volume.name, volume.number, volume.sortOrder)
                 },
             )
             dao.upsertChapters(
@@ -230,20 +242,34 @@ class LibraryRepository(
                     ),
                 )
             } else {
-                val reorderedChapter = chapterImports.firstOrNull { chapter ->
-                    chapter.id == preservedProgress.currentChapterId
-                }
+                val reorderedChapter = chapterImports.firstOrNull { it.id == preservedProgress.currentChapterId }
                 if (reorderedChapter != null && reorderedChapter.sortOrder != preservedProgress.chapterNumber) {
                     dao.upsertReadingProgress(
-                        preservedProgress.copy(
-                            chapterNumber = reorderedChapter.sortOrder,
-                            updatedAt = now,
-                        ),
+                        preservedProgress.copy(chapterNumber = reorderedChapter.sortOrder, updatedAt = now),
                     )
                 }
             }
-
             existingTitle != null
+        }
+    }
+
+    suspend fun openChapter(titleId: String, sortOrder: Int) {
+        val chapter = dao.chapterByOrder(titleId, sortOrder) ?: return
+        val existing = dao.chapterStateById(chapter.id)
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            dao.upsertReadingProgress(
+                ReadingProgressEntity(
+                    titleId = titleId,
+                    currentChapterId = chapter.id,
+                    chapterNumber = chapter.sortOrder,
+                    chapterProgress = existing?.progress?.takeIf { !existing.isRead } ?: 0f,
+                    scrollOffset = 0,
+                    locator = null,
+                    updatedAt = now,
+                ),
+            )
+            dao.touchTitle(titleId, now)
         }
     }
 
@@ -251,16 +277,9 @@ class LibraryRepository(
         withContext(Dispatchers.IO) {
             val chapter = dao.chapterByOrder(titleId, sortOrder) ?: return@withContext null
             val text = chapter.localUri?.let { path ->
-                runCatching {
-                    File(path).takeIf(File::isFile)?.readText(Charsets.UTF_8)
-                }.getOrNull()
+                runCatching { File(path).takeIf(File::isFile)?.readText(Charsets.UTF_8) }.getOrNull()
             }
-            ReaderChapterContent(
-                id = chapter.id,
-                title = chapter.name,
-                sortOrder = chapter.sortOrder,
-                text = text,
-            )
+            ReaderChapterContent(chapter.id, chapter.name, chapter.sortOrder, text)
         }
 
     suspend fun saveOverallProgress(titleId: String, overallProgress: Float) {
@@ -271,19 +290,17 @@ class LibraryRepository(
         val exact = normalized * totalChapters
         val rounded = exact.roundToInt()
         val isBoundary = rounded > 0 && abs(exact - rounded) < 0.0001f
-
         val chapterNumber = when {
             normalized >= 1f -> totalChapters
             isBoundary -> rounded
             else -> floor(exact).toInt() + 1
         }.coerceIn(1, totalChapters)
-
         val chapterProgress = when {
             normalized >= 1f || isBoundary -> 1f
             else -> exact - floor(exact)
         }.coerceIn(0f, 1f)
-
         val currentChapter = dao.chapterByOrder(titleId, chapterNumber) ?: return
+        val previousCurrentState = dao.chapterStateById(currentChapter.id)
         val now = System.currentTimeMillis()
 
         database.withTransaction {
@@ -300,24 +317,16 @@ class LibraryRepository(
             )
 
             val completedThrough = if (chapterProgress >= 1f) chapterNumber else chapterNumber - 1
-            val completed = if (completedThrough > 0) {
-                dao.chaptersUpTo(titleId, completedThrough)
-            } else {
-                emptyList()
-            }
+            val completed = if (completedThrough > 0) dao.chaptersUpTo(titleId, completedThrough) else emptyList()
+            val currentIsRead = previousCurrentState?.isRead == true || chapterProgress >= 1f
+            val currentStoredProgress = if (currentIsRead) 1f else maxOf(previousCurrentState?.progress ?: 0f, chapterProgress)
             val states = completed.map { chapter ->
-                ChapterStateEntity(
-                    chapterId = chapter.id,
-                    titleId = titleId,
-                    progress = 1f,
-                    isRead = true,
-                    updatedAt = now,
-                )
+                ChapterStateEntity(chapter.id, titleId, 1f, true, now)
             } + ChapterStateEntity(
                 chapterId = currentChapter.id,
                 titleId = titleId,
-                progress = chapterProgress,
-                isRead = chapterProgress >= 1f,
+                progress = currentStoredProgress,
+                isRead = currentIsRead,
                 updatedAt = now,
             )
             dao.upsertChapterStates(states.distinctBy { it.chapterId })
@@ -335,12 +344,7 @@ class LibraryRepository(
 private fun TitleSummaryRow.toBook(): Book {
     val total = totalChapters.coerceAtLeast(0)
     val current = if (total == 0) 0 else currentChapter.coerceIn(1, total)
-    val totalProgress = if (total == 0) {
-        0f
-    } else {
-        ((current - 1) + chapterProgress.coerceIn(0f, 1f)) / total
-    }
-
+    val totalProgress = if (total == 0) 0f else ((current - 1) + chapterProgress.coerceIn(0f, 1f)) / total
     return Book(
         id = title.id,
         title = title.title,
@@ -366,6 +370,5 @@ private data class DemoTitle(
     val accentSeed: Int,
 ) {
     val volumeId: String = "$id:volume:1"
-
     fun chapterId(number: Int): String = "$id:chapter:$number"
 }
