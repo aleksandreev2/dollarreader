@@ -182,7 +182,7 @@ class LibraryExportService(
 
     private companion object {
         const val DATABASE_NAME = "dollarreader.db"
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
         const val BACKUP_FORMAT = "DollarReader portable backup v1"
     }
 }

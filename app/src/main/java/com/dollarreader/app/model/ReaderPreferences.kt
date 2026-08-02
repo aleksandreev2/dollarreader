@@ -25,6 +25,7 @@ data class ReaderPreferences(
     val horizontalPaddingDp: Int = 24,
     val colorTheme: ReaderColorTheme = ReaderColorTheme.SYSTEM,
     val showChapterTitle: Boolean = true,
+    val keepControlsVisible: Boolean = false,
 ) {
     companion object {
         val Default = ReaderPreferences()

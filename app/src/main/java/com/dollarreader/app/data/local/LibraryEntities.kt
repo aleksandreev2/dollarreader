@@ -1,5 +1,6 @@
 package com.dollarreader.app.data.local
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -172,6 +173,7 @@ data class ReaderPreferencesEntity(
     val horizontalPaddingDp: Int,
     val colorTheme: String,
     val showChapterTitle: Boolean,
+    @ColumnInfo(defaultValue = "0") val keepControlsVisible: Boolean,
     val updatedAt: Long,
 )
 

@@ -43,6 +43,27 @@ fun ReaderSettingsControls(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        SettingsSection(title = "Управление") {
+            ToggleSetting(
+                title = "Закрепить панели читалки",
+                subtitle = if (preferences.keepControlsVisible) {
+                    "Верхняя и нижняя панели всегда остаются на экране"
+                } else {
+                    "При прокрутке вниз панели скрываются, при прокрутке вверх появляются"
+                },
+                checked = preferences.keepControlsVisible,
+                onCheckedChange = { checked ->
+                    onPreferencesChange(preferences.copy(keepControlsVisible = checked))
+                },
+            )
+            Text(
+                "Кнопка громкости + открывает предыдущую главу, кнопка громкости − — следующую. " +
+                    "Горизонтальный свайп между главами отключён.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SettingsSection(title = "Шрифт") {
             ChoiceRow {
                 ReaderFontOption.entries.forEach { option ->
@@ -236,17 +257,27 @@ private fun ToggleSetting(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    subtitle: String? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(
-            title,
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 12.dp),
-        )
+        ) {
+            Text(title)
+            subtitle?.let { text ->
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+            }
+        }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,

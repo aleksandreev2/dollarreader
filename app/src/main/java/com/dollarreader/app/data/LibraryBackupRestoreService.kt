@@ -278,7 +278,7 @@ class LibraryBackupRestoreService(
         private const val BACKUP_FORMAT = "DollarReader portable backup v1"
         private const val METADATA_FILE = "backup-info.json"
         private const val READY_MARKER = "restore-ready.json"
-        private const val CURRENT_DATABASE_VERSION = 5
+        private const val CURRENT_DATABASE_VERSION = 6
         private const val MAX_ENTRIES = 50_000
         private const val MAX_METADATA_BYTES = 1024L * 1024L
         private const val MAX_ENTRY_BYTES = 256L * 1024L * 1024L

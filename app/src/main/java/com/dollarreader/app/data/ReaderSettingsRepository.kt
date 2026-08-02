@@ -37,6 +37,7 @@ class ReaderSettingsRepository(
                 horizontalPaddingDp = normalized.horizontalPaddingDp,
                 colorTheme = normalized.colorTheme.name,
                 showChapterTitle = normalized.showChapterTitle,
+                keepControlsVisible = normalized.keepControlsVisible,
                 updatedAt = System.currentTimeMillis(),
             ),
         )
@@ -160,6 +161,7 @@ class ReaderSettingsRepository(
         horizontalPaddingDp = horizontalPaddingDp,
         colorTheme = enumValueOrDefault(colorTheme, ReaderColorTheme.SYSTEM),
         showChapterTitle = showChapterTitle,
+        keepControlsVisible = keepControlsVisible,
     ).normalized()
 
     private fun ReaderPreferences.normalized(): ReaderPreferences = copy(

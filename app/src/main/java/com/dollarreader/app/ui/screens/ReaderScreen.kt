@@ -6,7 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,7 +25,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -54,20 +57,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -90,6 +93,8 @@ import com.dollarreader.app.model.ReaderTextSelection
 import com.dollarreader.app.model.ReadingAnnotation
 import com.dollarreader.app.model.ReadingAnnotationType
 import com.dollarreader.app.ui.components.ReaderSettingsControls
+import com.dollarreader.app.ui.reader.VolumeChapterDirection
+import com.dollarreader.app.ui.reader.VolumeKeyChapterNavigator
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -132,9 +137,9 @@ fun ReaderScreen(
     val listState = rememberLazyListState()
     val palette = readerPalette(preferences.colorTheme)
     val fontFamily = preferences.font.toFontFamily()
-    val swipeThresholdPx = with(LocalDensity.current) { SWIPE_THRESHOLD_DP.dp.toPx() }
     var showSettings by remember { mutableStateOf(false) }
     var showAnnotations by remember(chapter?.id) { mutableStateOf(false) }
+    var controlsVisible by remember(chapter?.id) { mutableStateOf(true) }
     var restoredChapterId by remember { mutableStateOf<String?>(null) }
     var navigationRequestedForChapter by remember { mutableStateOf<String?>(null) }
     var hasUserScrolled by remember(chapter?.id) { mutableStateOf(false) }
@@ -147,6 +152,9 @@ fun ReaderScreen(
     var noteDraft by remember(chapter?.id) { mutableStateOf("") }
     var chapterProgress by remember(chapter?.id, initialPosition?.progress) {
         mutableFloatStateOf(initialPosition?.progress ?: 0f)
+    }
+    var previousScrollPoint by remember(chapter?.id) {
+        mutableStateOf(ReaderScrollPoint(0, 0))
     }
 
     fun currentPosition(): ChapterReadingPosition? {
@@ -181,6 +189,7 @@ fun ReaderScreen(
     }
 
     fun requestChapterNavigation(forward: Boolean) {
+        if (showSettings || showAnnotations || pendingNoteSelection != null) return
         val currentChapter = chapter ?: return
         if (navigationRequestedForChapter == currentChapter.id) return
         if (forward && !canGoNext) return
@@ -196,12 +205,28 @@ fun ReaderScreen(
         }
     }
 
+    val latestVolumeNavigation by rememberUpdatedState<(VolumeChapterDirection) -> Unit> { direction ->
+        requestChapterNavigation(direction == VolumeChapterDirection.NEXT)
+    }
+    DisposableEffect(Unit) {
+        val unregister = VolumeKeyChapterNavigator.register { direction ->
+            latestVolumeNavigation(direction)
+        }
+        onDispose { unregister() }
+    }
+
     LaunchedEffect(chapter?.id) {
         navigationRequestedForChapter = null
         hasUserScrolled = false
         selectedText = null
         pendingNoteSelection = null
         showAnnotations = false
+        controlsVisible = true
+        previousScrollPoint = ReaderScrollPoint(0, 0)
+    }
+
+    LaunchedEffect(preferences.keepControlsVisible) {
+        if (preferences.keepControlsVisible) controlsVisible = true
     }
 
     LaunchedEffect(
@@ -224,11 +249,20 @@ fun ReaderScreen(
                 scrollOffset = position.firstVisibleItemScrollOffset.coerceAtLeast(0),
             )
             chapterProgress = position.progress.coerceIn(0f, 1f)
+            previousScrollPoint = ReaderScrollPoint(
+                position.firstVisibleItemIndex.coerceAtLeast(0),
+                position.firstVisibleItemScrollOffset.coerceAtLeast(0),
+            )
         }
         restoredChapterId = currentChapter.id
     }
 
-    LaunchedEffect(chapter?.id, restoredChapterId, preferences.showChapterTitle) {
+    LaunchedEffect(
+        chapter?.id,
+        restoredChapterId,
+        preferences.showChapterTitle,
+        preferences.keepControlsVisible,
+    ) {
         val currentChapter = chapter ?: return@LaunchedEffect
         if (restoredChapterId != currentChapter.id) return@LaunchedEffect
 
@@ -240,7 +274,23 @@ fun ReaderScreen(
                 isScrolling = listState.isScrollInProgress,
             )
         }.collectLatest { snapshot ->
-            if (snapshot.isScrolling) hasUserScrolled = true
+            if (snapshot.isScrolling) {
+                hasUserScrolled = true
+                if (!preferences.keepControlsVisible) {
+                    val current = ReaderScrollPoint(snapshot.itemIndex, snapshot.scrollOffset)
+                    when {
+                        current.isAfter(previousScrollPoint) -> controlsVisible = false
+                        current.isBefore(previousScrollPoint) -> controlsVisible = true
+                    }
+                    if (snapshot.itemIndex == 0 && snapshot.scrollOffset <= 2) {
+                        controlsVisible = true
+                    }
+                    previousScrollPoint = current
+                }
+            } else {
+                previousScrollPoint = ReaderScrollPoint(snapshot.itemIndex, snapshot.scrollOffset)
+            }
+
             val position = currentPosition() ?: return@collectLatest
             chapterProgress = position.progress
             delay(POSITION_SAVE_DELAY_MS)
@@ -359,9 +409,7 @@ fun ReaderScreen(
                             AnnotationCard(
                                 annotation = annotation,
                                 palette = palette,
-                                onDelete = {
-                                    onDeleteAnnotation(annotation.id)
-                                },
+                                onDelete = { onDeleteAnnotation(annotation.id) },
                             )
                         }
                     }
@@ -370,92 +418,37 @@ fun ReaderScreen(
         }
     }
 
+    val chromeVisible = preferences.keepControlsVisible || controlsVisible || selectedText != null
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = palette.background,
         contentColor = palette.text,
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            AnimatedVisibility(
+                visible = chromeVisible,
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
             ) {
-                IconButton(
-                    onClick = {
+                ReaderTopBar(
+                    book = book,
+                    chapterTitle = chapterTitle,
+                    annotationsCount = annotations.size,
+                    palette = palette,
+                    onBack = {
                         currentPosition()?.let(onPositionChange)
                         onBack()
                     },
-                ) {
-                    Icon(
-                        Icons.Outlined.ArrowBack,
-                        contentDescription = "Назад",
-                        tint = palette.text,
-                    )
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        book.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = palette.text,
-                        maxLines = 1,
-                    )
-                    Text(
-                        chapterTitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.secondaryText,
-                        maxLines = 1,
-                    )
-                }
-                IconButton(onClick = { showAnnotations = true }) {
-                    Icon(
-                        Icons.Outlined.BookmarkBorder,
-                        contentDescription = "Заметки и выделения: ${annotations.size}",
-                        tint = if (annotations.isEmpty()) palette.text else palette.accent,
-                    )
-                }
-                IconButton(onClick = { showSettings = true }) {
-                    Icon(
-                        Icons.Outlined.TextFields,
-                        contentDescription = "Настройки чтения",
-                        tint = palette.accent,
-                    )
-                }
-            }
-
-            val swipeModifier = if (selectedText == null) {
-                Modifier.pointerInput(chapter?.id, canGoPrevious, canGoNext) {
-                    var horizontalDistance = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { horizontalDistance = 0f },
-                        onHorizontalDrag = { _, dragAmount ->
-                            horizontalDistance += dragAmount
-                        },
-                        onDragCancel = { horizontalDistance = 0f },
-                        onDragEnd = {
-                            when {
-                                horizontalDistance <= -swipeThresholdPx ->
-                                    requestChapterNavigation(forward = true)
-                                horizontalDistance >= swipeThresholdPx ->
-                                    requestChapterNavigation(forward = false)
-                            }
-                            horizontalDistance = 0f
-                        },
-                    )
-                }
-            } else {
-                Modifier
+                    onAnnotations = { showAnnotations = true },
+                    onSettings = { showSettings = true },
+                )
             }
 
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .then(swipeModifier),
+                    .fillMaxWidth(),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 LazyColumn(
@@ -546,90 +539,166 @@ fun ReaderScreen(
                 )
             }
 
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = palette.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+            AnimatedVisibility(
+                visible = chromeVisible,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                ReaderBottomBar(
+                    currentChapter = book.currentChapter,
+                    totalChapters = book.totalChapters,
+                    chapterProgress = chapterProgress,
+                    canGoPrevious = canGoPrevious,
+                    canGoNext = canGoNext,
+                    navigationLocked = navigationRequestedForChapter == chapter?.id,
+                    palette = palette,
+                    onPrevious = { requestChapterNavigation(forward = false) },
+                    onNext = { requestChapterNavigation(forward = true) },
+                    onSettings = { showSettings = true },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderTopBar(
+    book: Book,
+    chapterTitle: String,
+    annotationsCount: Int,
+    palette: ReaderPalette,
+    onBack: () -> Unit,
+    onAnnotations: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.Outlined.ArrowBack,
+                contentDescription = "Назад",
+                tint = palette.text,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                book.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = palette.text,
+                maxLines = 1,
+            )
+            Text(
+                chapterTitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.secondaryText,
+                maxLines = 1,
+            )
+        }
+        IconButton(onClick = onAnnotations) {
+            Icon(
+                Icons.Outlined.BookmarkBorder,
+                contentDescription = "Заметки и выделения: $annotationsCount",
+                tint = if (annotationsCount == 0) palette.text else palette.accent,
+            )
+        }
+        IconButton(onClick = onSettings) {
+            Icon(
+                Icons.Outlined.TextFields,
+                contentDescription = "Настройки чтения",
+                tint = palette.accent,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReaderBottomBar(
+    currentChapter: Int,
+    totalChapters: Int,
+    chapterProgress: Float,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    navigationLocked: Boolean,
+    palette: ReaderPalette,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = palette.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            LinearProgressIndicator(
+                progress = { chapterProgress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+                color = palette.accent,
+                trackColor = palette.track,
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onPrevious,
+                    enabled = canGoPrevious && !navigationLocked,
+                    modifier = Modifier.size(42.dp),
                 ) {
-                    LinearProgressIndicator(
-                        progress = { chapterProgress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = palette.accent,
-                        trackColor = palette.track,
+                    Icon(
+                        Icons.Outlined.ChevronLeft,
+                        contentDescription = "Предыдущая глава",
+                        tint = if (canGoPrevious) palette.accent else palette.secondaryText,
                     )
-                    Spacer(Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(
-                            onClick = {
-                                requestChapterNavigation(forward = false)
-                            },
-                            enabled = canGoPrevious &&
-                                navigationRequestedForChapter != chapter?.id,
-                            modifier = Modifier.size(42.dp),
-                        ) {
-                            Icon(
-                                Icons.Outlined.ChevronLeft,
-                                contentDescription = "Предыдущая глава",
-                                tint = if (canGoPrevious) {
-                                    palette.accent
-                                } else {
-                                    palette.secondaryText
-                                },
-                            )
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(
-                                "${book.currentChapter} из ${book.totalChapters}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = palette.text,
-                            )
-                            Text(
-                                "${(chapterProgress * 100).toInt()}% главы",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.secondaryText,
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                requestChapterNavigation(forward = true)
-                            },
-                            enabled = canGoNext &&
-                                navigationRequestedForChapter != chapter?.id,
-                            modifier = Modifier.size(42.dp),
-                        ) {
-                            Icon(
-                                Icons.Outlined.ChevronRight,
-                                contentDescription = "Следующая глава",
-                                tint = if (canGoNext) {
-                                    palette.accent
-                                } else {
-                                    palette.secondaryText
-                                },
-                            )
-                        }
-                        IconButton(
-                            onClick = { showSettings = true },
-                            modifier = Modifier.size(38.dp),
-                        ) {
-                            Icon(
-                                Icons.Outlined.TextFields,
-                                contentDescription = "Настройки чтения",
-                                tint = palette.accent,
-                            )
-                        }
-                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        "$currentChapter из $totalChapters",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.text,
+                    )
+                    Text(
+                        "${(chapterProgress * 100).toInt()}% главы",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.secondaryText,
+                    )
+                }
+                IconButton(
+                    onClick = onNext,
+                    enabled = canGoNext && !navigationLocked,
+                    modifier = Modifier.size(42.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.ChevronRight,
+                        contentDescription = "Следующая глава",
+                        tint = if (canGoNext) palette.accent else palette.secondaryText,
+                    )
+                }
+                IconButton(
+                    onClick = onSettings,
+                    modifier = Modifier.size(38.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.TextFields,
+                        contentDescription = "Настройки чтения",
+                        tint = palette.accent,
+                    )
                 }
             }
         }
@@ -647,8 +716,8 @@ private fun SelectableParagraph(
     palette: ReaderPalette,
     onSelectionChange: (ReaderTextSelection?) -> Unit,
 ) {
-    val annotatedText = remember(paragraph, annotations) {
-        paragraph.withAnnotations(annotations)
+    val annotatedText = remember(paragraph, annotations, palette.highlight, palette.noteHighlight) {
+        paragraph.withAnnotations(annotations, palette)
     }
     val selectedRange = activeSelection
         ?.takeIf { it.paragraphIndex == paragraphIndex }
@@ -820,29 +889,26 @@ private fun AnnotationCard(
     }
 }
 
-private fun String.withAnnotations(annotations: List<ReadingAnnotation>): AnnotatedString =
-    buildAnnotatedString {
-        append(this@withAnnotations)
-        annotations.forEach { annotation ->
-            val start = annotation.startOffset.coerceIn(0, length)
-            val end = annotation.endOffset.coerceIn(0, length)
-            if (
-                end > start &&
-                substring(start, end) == annotation.selectedText
-            ) {
-                val style = when (annotation.type) {
-                    ReadingAnnotationType.HIGHLIGHT -> SpanStyle(
-                        background = Color(0x66FFD54F),
-                    )
-                    ReadingAnnotationType.NOTE -> SpanStyle(
-                        background = Color(0x447E57C2),
-                        textDecoration = TextDecoration.Underline,
-                    )
-                }
-                addStyle(style, start, end)
+private fun String.withAnnotations(
+    annotations: List<ReadingAnnotation>,
+    palette: ReaderPalette,
+): AnnotatedString = buildAnnotatedString {
+    append(this@withAnnotations)
+    annotations.forEach { annotation ->
+        val start = annotation.startOffset.coerceIn(0, length)
+        val end = annotation.endOffset.coerceIn(0, length)
+        if (end > start && substring(start, end) == annotation.selectedText) {
+            val style = when (annotation.type) {
+                ReadingAnnotationType.HIGHLIGHT -> SpanStyle(background = palette.highlight)
+                ReadingAnnotationType.NOTE -> SpanStyle(
+                    background = palette.noteHighlight,
+                    textDecoration = TextDecoration.Underline,
+                )
             }
+            addStyle(style, start, end)
         }
     }
+}
 
 private fun copyText(context: Context, text: String) {
     val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -889,6 +955,8 @@ private fun readerPalette(theme: ReaderColorTheme): ReaderPalette = when (theme)
         secondaryText = MaterialTheme.colorScheme.onSurfaceVariant,
         accent = MaterialTheme.colorScheme.primary,
         track = MaterialTheme.colorScheme.surfaceVariant,
+        highlight = Color(0x66FFD54F),
+        noteHighlight = Color(0x557E57C2),
     )
     ReaderColorTheme.PAPER -> ReaderPalette(
         background = Color(0xFFFFFBF4),
@@ -897,6 +965,8 @@ private fun readerPalette(theme: ReaderColorTheme): ReaderPalette = when (theme)
         secondaryText = Color(0xFF6D6258),
         accent = Color(0xFF76558F),
         track = Color(0xFFE3D8CC),
+        highlight = Color(0x88FFD54F),
+        noteHighlight = Color(0x667E57C2),
     )
     ReaderColorTheme.SEPIA -> ReaderPalette(
         background = Color(0xFFF1E6CC),
@@ -905,6 +975,8 @@ private fun readerPalette(theme: ReaderColorTheme): ReaderPalette = when (theme)
         secondaryText = Color(0xFF71614F),
         accent = Color(0xFF7A536E),
         track = Color(0xFFD7C5A2),
+        highlight = Color(0x88E3B341),
+        noteHighlight = Color(0x667A536E),
     )
     ReaderColorTheme.NIGHT -> ReaderPalette(
         background = Color(0xFF17181D),
@@ -913,6 +985,8 @@ private fun readerPalette(theme: ReaderColorTheme): ReaderPalette = when (theme)
         secondaryText = Color(0xFFB9B5C0),
         accent = Color(0xFFCEAAFF),
         track = Color(0xFF393A43),
+        highlight = Color(0x665D9CEC),
+        noteHighlight = Color(0x667F5AAF),
     )
     ReaderColorTheme.BLACK -> ReaderPalette(
         background = Color.Black,
@@ -921,6 +995,8 @@ private fun readerPalette(theme: ReaderColorTheme): ReaderPalette = when (theme)
         secondaryText = Color(0xFFBDBDBD),
         accent = Color(0xFFD5B7FF),
         track = Color(0xFF2A2A2A),
+        highlight = Color(0x666DA8FF),
+        noteHighlight = Color(0x667A58A6),
     )
 }
 
@@ -931,6 +1007,8 @@ private data class ReaderPalette(
     val secondaryText: Color,
     val accent: Color,
     val track: Color,
+    val highlight: Color,
+    val noteHighlight: Color,
 )
 
 private data class ReaderScrollSnapshot(
@@ -939,6 +1017,19 @@ private data class ReaderScrollSnapshot(
     val totalItems: Int,
     val isScrolling: Boolean,
 )
+
+private data class ReaderScrollPoint(
+    val itemIndex: Int,
+    val scrollOffset: Int,
+) {
+    fun isAfter(other: ReaderScrollPoint): Boolean =
+        itemIndex > other.itemIndex ||
+            (itemIndex == other.itemIndex && scrollOffset > other.scrollOffset + SCROLL_DIRECTION_SLOP_PX)
+
+    fun isBefore(other: ReaderScrollPoint): Boolean =
+        itemIndex < other.itemIndex ||
+            (itemIndex == other.itemIndex && scrollOffset + SCROLL_DIRECTION_SLOP_PX < other.scrollOffset)
+}
 
 private fun String.toReaderParagraphs(chapterTitle: String): List<String> {
     val paragraphs = trim()
@@ -966,4 +1057,4 @@ private fun normalizeHeading(value: String): String =
         .trim()
 
 private const val POSITION_SAVE_DELAY_MS = 550L
-private const val SWIPE_THRESHOLD_DP = 72
+private const val SCROLL_DIRECTION_SLOP_PX = 4
