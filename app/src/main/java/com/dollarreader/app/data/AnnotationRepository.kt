@@ -16,7 +16,7 @@ class AnnotationRepository(
 
     fun observeChapterAnnotations(chapterId: String): Flow<List<ReadingAnnotation>> =
         dao.observeReadingAnnotations(chapterId).map { entities ->
-            entities.map(ReadingAnnotationEntity::toModel)
+            entities.map { entity -> entity.toModel() }
         }
 
     suspend fun addHighlight(
