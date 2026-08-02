@@ -18,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReaderPreferencesEntity::class,
         ChapterPositionEntity::class,
         ReadingAnnotationEntity::class,
+        ChapterSearchIndexEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class DollarReaderDatabase : RoomDatabase() {
@@ -77,17 +78,9 @@ abstract class DollarReaderDatabase : RoomDatabase() {
                 database.execSQL(
                     """
                     INSERT OR IGNORE INTO `reader_preferences` (
-                        `id`,
-                        `fontFamily`,
-                        `fontSizeSp`,
-                        `lineHeightMultiplier`,
-                        `paragraphSpacingDp`,
-                        `firstLineIndentEm`,
-                        `contentWidthDp`,
-                        `horizontalPaddingDp`,
-                        `colorTheme`,
-                        `showChapterTitle`,
-                        `updatedAt`
+                        `id`, `fontFamily`, `fontSizeSp`, `lineHeightMultiplier`,
+                        `paragraphSpacingDp`, `firstLineIndentEm`, `contentWidthDp`,
+                        `horizontalPaddingDp`, `colorTheme`, `showChapterTitle`, `updatedAt`
                     ) VALUES (0, 'SERIF', 18.0, 1.6, 16.0, 1.25, 720, 24, 'SYSTEM', 1, 0)
                     """.trimIndent(),
                 )
@@ -150,6 +143,28 @@ abstract class DollarReaderDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS `chapter_search_fts`
+                    USING FTS4(
+                        `titleId`,
+                        `titleName`,
+                        `chapterId`,
+                        `chapterName`,
+                        `chapterSortOrder`,
+                        `paragraphIndex`,
+                        `content`,
+                        `contentHash`,
+                        `updatedAt`,
+                        tokenize=unicode61
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun getInstance(context: Context): DollarReaderDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -157,7 +172,12 @@ abstract class DollarReaderDatabase : RoomDatabase() {
                     DollarReaderDatabase::class.java,
                     "dollarreader.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                    )
                     .build()
                     .also { instance = it }
             }
