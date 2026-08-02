@@ -36,12 +36,15 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.LibraryRepository
+import com.dollarreader.app.data.ReaderSettingsRepository
 import com.dollarreader.app.data.importer.FolderBookImporter
 import com.dollarreader.app.data.importer.ImportPreview
 import com.dollarreader.app.data.importer.ImportResult
 import com.dollarreader.app.data.importer.LocalBookService
 import com.dollarreader.app.data.local.DollarReaderDatabase
+import com.dollarreader.app.model.ChapterReadingPosition
 import com.dollarreader.app.model.ReaderChapterContent
+import com.dollarreader.app.model.ReaderPreferences
 import com.dollarreader.app.ui.screens.BookDetailsScreen
 import com.dollarreader.app.ui.screens.HomeScreen
 import com.dollarreader.app.ui.screens.LibraryScreen
@@ -72,8 +75,14 @@ private object Routes {
 fun DollarReaderApp() {
     var darkTheme by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current.applicationContext
-    val repository = remember(context) {
-        LibraryRepository(DollarReaderDatabase.getInstance(context))
+    val database = remember(context) {
+        DollarReaderDatabase.getInstance(context)
+    }
+    val repository = remember(database) {
+        LibraryRepository(database)
+    }
+    val readerSettingsRepository = remember(database) {
+        ReaderSettingsRepository(database)
     }
     val localBookService = remember(context, repository) {
         LocalBookService(context, repository)
@@ -82,6 +91,9 @@ fun DollarReaderApp() {
         FolderBookImporter(context, repository)
     }
     val books by repository.books.collectAsState(initial = emptyList())
+    val readerPreferences by readerSettingsRepository.preferences.collectAsState(
+        initial = ReaderPreferences.Default,
+    )
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(repository) {
@@ -145,13 +157,17 @@ fun DollarReaderApp() {
                 composable(Routes.Home) {
                     HomeScreen(
                         books = books,
-                        onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onBookClick = { book ->
+                            navController.navigate(Routes.book(book.id))
+                        },
                     )
                 }
                 composable(Routes.Library) {
                     LibraryScreen(
                         books = books,
-                        onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onBookClick = { book ->
+                            navController.navigate(Routes.book(book.id))
+                        },
                         onPreviewImport = localBookService::previewBook,
                         onImport = localBookService::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
@@ -161,7 +177,9 @@ fun DollarReaderApp() {
                 composable(Routes.Downloads) {
                     LibraryScreen(
                         books = books.filter { it.totalChapters > 0 },
-                        onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onBookClick = { book ->
+                            navController.navigate(Routes.book(book.id))
+                        },
                         onPreviewImport = localBookService::previewBook,
                         onImport = localBookService::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
@@ -172,11 +190,21 @@ fun DollarReaderApp() {
                     SettingsScreen(
                         darkTheme = darkTheme,
                         onDarkThemeChange = { darkTheme = it },
+                        readerPreferences = readerPreferences,
+                        onReaderPreferencesChange = { preferences ->
+                            scope.launch {
+                                readerSettingsRepository.savePreferences(preferences)
+                            }
+                        },
                     )
                 }
                 composable(
                     route = Routes.BookPattern,
-                    arguments = listOf(navArgument(Routes.BookId) { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument(Routes.BookId) {
+                            type = NavType.StringType
+                        },
+                    ),
                 ) { entry ->
                     val bookId = entry.arguments?.getString(Routes.BookId)
                     val book = books.firstOrNull { it.id == bookId }
@@ -195,16 +223,24 @@ fun DollarReaderApp() {
                         val previewUpdateAction: (suspend () -> ImportPreview)? =
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
-                                    "ZIP/TXT" -> suspend { localBookService.previewBook(uri) }
-                                    "ПАПКА/TXT" -> suspend { folderImporter.previewFolder(uri) }
+                                    "ZIP/TXT" -> suspend {
+                                        localBookService.previewBook(uri)
+                                    }
+                                    "ПАПКА/TXT" -> suspend {
+                                        folderImporter.previewFolder(uri)
+                                    }
                                     else -> null
                                 }
                             }
                         val applyUpdateAction: (suspend () -> ImportResult)? =
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
-                                    "ZIP/TXT" -> suspend { localBookService.importBook(uri) }
-                                    "ПАПКА/TXT" -> suspend { folderImporter.importFolder(uri) }
+                                    "ZIP/TXT" -> suspend {
+                                        localBookService.importBook(uri)
+                                    }
+                                    "ПАПКА/TXT" -> suspend {
+                                        folderImporter.importFolder(uri)
+                                    }
                                     else -> null
                                 }
                             }
@@ -214,7 +250,9 @@ fun DollarReaderApp() {
                             contents = contents,
                             management = management,
                             onBack = { navController.popBackStack() },
-                            onRead = { navController.navigate(Routes.reader(book.id)) },
+                            onRead = {
+                                navController.navigate(Routes.reader(book.id))
+                            },
                             onChapterClick = { chapterOrder ->
                                 scope.launch {
                                     repository.openChapter(book.id, chapterOrder)
@@ -245,7 +283,11 @@ fun DollarReaderApp() {
                 }
                 composable(
                     route = Routes.ReaderPattern,
-                    arguments = listOf(navArgument(Routes.BookId) { type = NavType.StringType }),
+                    arguments = listOf(
+                        navArgument(Routes.BookId) {
+                            type = NavType.StringType
+                        },
+                    ),
                 ) { entry ->
                     val bookId = entry.arguments?.getString(Routes.BookId)
                     val book = books.firstOrNull { it.id == bookId }
@@ -257,14 +299,41 @@ fun DollarReaderApp() {
                             key1 = book.id,
                             key2 = book.currentChapter,
                         ) {
-                            value = repository.loadChapter(book.id, book.currentChapter)
+                            value = repository.loadChapter(
+                                book.id,
+                                book.currentChapter,
+                            )
                         }
+                        val initialPosition by produceState<ChapterReadingPosition?>(
+                            initialValue = null,
+                            key1 = chapter?.id,
+                        ) {
+                            value = chapter?.id?.let {
+                                readerSettingsRepository.loadPosition(it)
+                            }
+                        }
+
                         ReaderScreen(
                             book = book,
                             chapter = chapter,
+                            preferences = readerPreferences,
+                            initialPosition = initialPosition,
                             onBack = { navController.popBackStack() },
-                            onProgressChangeFinished = { progress ->
-                                scope.launch { repository.saveOverallProgress(book.id, progress) }
+                            onPreferencesChange = { preferences ->
+                                scope.launch {
+                                    readerSettingsRepository.savePreferences(preferences)
+                                }
+                            },
+                            onPositionChange = { position ->
+                                val chapterNumber = chapter?.sortOrder
+                                    ?: book.currentChapter
+                                scope.launch {
+                                    readerSettingsRepository.savePosition(
+                                        titleId = book.id,
+                                        chapterNumber = chapterNumber,
+                                        position = position,
+                                    )
+                                }
                             },
                         )
                     }

@@ -58,6 +58,9 @@ interface LibraryDao {
     )
     fun observeUpdateHistory(titleId: String, limit: Int = 20): Flow<List<UpdateHistoryEntity>>
 
+    @Query("SELECT * FROM reader_preferences WHERE id = 0 LIMIT 1")
+    fun observeReaderPreferences(): Flow<ReaderPreferencesEntity?>
+
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     suspend fun titleById(titleId: String): TitleEntity?
 
@@ -66,6 +69,9 @@ interface LibraryDao {
 
     @Query("SELECT * FROM chapter_states WHERE chapterId = :chapterId LIMIT 1")
     suspend fun chapterStateById(chapterId: String): ChapterStateEntity?
+
+    @Query("SELECT * FROM chapter_positions WHERE chapterId = :chapterId LIMIT 1")
+    suspend fun chapterPositionById(chapterId: String): ChapterPositionEntity?
 
     @Query("SELECT * FROM chapters WHERE titleId = :titleId ORDER BY sortOrder")
     suspend fun chaptersByTitle(titleId: String): List<ChapterEntity>
@@ -108,6 +114,12 @@ interface LibraryDao {
 
     @Upsert
     suspend fun upsertChapterStates(states: List<ChapterStateEntity>)
+
+    @Upsert
+    suspend fun upsertReaderPreferences(preferences: ReaderPreferencesEntity)
+
+    @Upsert
+    suspend fun upsertChapterPosition(position: ChapterPositionEntity)
 
     @Query(
         """

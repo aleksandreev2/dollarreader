@@ -159,3 +159,45 @@ data class UpdateHistoryEntity(
     val chapterCount: Int,
     val createdAt: Long,
 )
+
+@Entity(tableName = "reader_preferences")
+data class ReaderPreferencesEntity(
+    @PrimaryKey val id: Int = 0,
+    val fontFamily: String,
+    val fontSizeSp: Float,
+    val lineHeightMultiplier: Float,
+    val paragraphSpacingDp: Float,
+    val firstLineIndentEm: Float,
+    val contentWidthDp: Int,
+    val horizontalPaddingDp: Int,
+    val colorTheme: String,
+    val showChapterTitle: Boolean,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "chapter_positions",
+    foreignKeys = [
+        ForeignKey(
+            entity = TitleEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["titleId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = ChapterEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["chapterId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["titleId"])],
+)
+data class ChapterPositionEntity(
+    @PrimaryKey val chapterId: String,
+    val titleId: String,
+    val firstVisibleItemIndex: Int,
+    val firstVisibleItemScrollOffset: Int,
+    val progress: Float,
+    val updatedAt: Long,
+)

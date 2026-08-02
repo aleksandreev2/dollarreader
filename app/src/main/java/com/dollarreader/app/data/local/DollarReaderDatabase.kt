@@ -15,8 +15,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReadingProgressEntity::class,
         ChapterStateEntity::class,
         UpdateHistoryEntity::class,
+        ReaderPreferencesEntity::class,
+        ChapterPositionEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class DollarReaderDatabase : RoomDatabase() {
@@ -51,6 +53,66 @@ abstract class DollarReaderDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `reader_preferences` (
+                        `id` INTEGER NOT NULL,
+                        `fontFamily` TEXT NOT NULL,
+                        `fontSizeSp` REAL NOT NULL,
+                        `lineHeightMultiplier` REAL NOT NULL,
+                        `paragraphSpacingDp` REAL NOT NULL,
+                        `firstLineIndentEm` REAL NOT NULL,
+                        `contentWidthDp` INTEGER NOT NULL,
+                        `horizontalPaddingDp` INTEGER NOT NULL,
+                        `colorTheme` TEXT NOT NULL,
+                        `showChapterTitle` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    """
+                    INSERT OR IGNORE INTO `reader_preferences` (
+                        `id`,
+                        `fontFamily`,
+                        `fontSizeSp`,
+                        `lineHeightMultiplier`,
+                        `paragraphSpacingDp`,
+                        `firstLineIndentEm`,
+                        `contentWidthDp`,
+                        `horizontalPaddingDp`,
+                        `colorTheme`,
+                        `showChapterTitle`,
+                        `updatedAt`
+                    ) VALUES (0, 'SERIF', 18.0, 1.6, 16.0, 1.25, 720, 24, 'SYSTEM', 1, 0)
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chapter_positions` (
+                        `chapterId` TEXT NOT NULL,
+                        `titleId` TEXT NOT NULL,
+                        `firstVisibleItemIndex` INTEGER NOT NULL,
+                        `firstVisibleItemScrollOffset` INTEGER NOT NULL,
+                        `progress` REAL NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`chapterId`),
+                        FOREIGN KEY(`titleId`) REFERENCES `titles`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`chapterId`) REFERENCES `chapters`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_chapter_positions_titleId` ON `chapter_positions` (`titleId`)",
+                )
+            }
+        }
+
         fun getInstance(context: Context): DollarReaderDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -58,7 +120,7 @@ abstract class DollarReaderDatabase : RoomDatabase() {
                     DollarReaderDatabase::class.java,
                     "dollarreader.db",
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }
