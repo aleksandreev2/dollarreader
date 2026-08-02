@@ -35,6 +35,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dollarreader.app.model.Book
+import com.dollarreader.app.model.ReaderChapterContent
+import java.util.Locale
 
 private val previewParagraphs = listOf(
     "Сон Чину медленно открыл глаза. Перед ним простирался бесконечный лабиринт, окутанный мраком. Система выдала новое задание.",
@@ -47,10 +49,15 @@ private val previewParagraphs = listOf(
 @Composable
 fun ReaderScreen(
     book: Book,
+    chapter: ReaderChapterContent?,
     onBack: () -> Unit,
     onProgressChangeFinished: (Float) -> Unit,
 ) {
-    var progress by remember(book.id) { mutableFloatStateOf(book.progress) }
+    var progress by remember(book.id, book.progress) { mutableFloatStateOf(book.progress) }
+    val chapterTitle = chapter?.title ?: "Глава ${book.currentChapter}"
+    val paragraphs = remember(chapter?.id, chapter?.text) {
+        chapter?.text?.toReaderParagraphs(chapterTitle).orEmpty().ifEmpty { previewParagraphs }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -66,9 +73,10 @@ fun ReaderScreen(
             ) {
                 Text(book.title, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 Text(
-                    "Глава ${book.currentChapter}. Испытание",
+                    chapterTitle,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
             }
             IconButton(onClick = { }) { Icon(Icons.Outlined.BookmarkBorder, "Закладка") }
@@ -83,7 +91,7 @@ fun ReaderScreen(
             item { Spacer(Modifier.height(18.dp)) }
             item {
                 Text(
-                    text = "Глава ${book.currentChapter}. Испытание",
+                    text = chapterTitle,
                     modifier = Modifier.fillMaxWidth(),
                     fontFamily = FontFamily.Serif,
                     fontSize = 27.sp,
@@ -91,7 +99,7 @@ fun ReaderScreen(
                     textAlign = TextAlign.Center,
                 )
             }
-            items(previewParagraphs) { paragraph ->
+            items(paragraphs) { paragraph ->
                 Text(
                     text = paragraph,
                     fontFamily = FontFamily.Serif,
@@ -139,9 +147,34 @@ fun ReaderScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.weight(1f))
-                    Text("09:30", style = MaterialTheme.typography.bodyMedium)
+                    Text(book.format, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
     }
 }
+
+private fun String.toReaderParagraphs(chapterTitle: String): List<String> {
+    val paragraphs = trim()
+        .split(Regex("\n[\t ]*\n+"))
+        .map { paragraph -> paragraph.trim() }
+        .filter(String::isNotBlank)
+        .toMutableList()
+
+    val first = paragraphs.firstOrNull()
+    if (first != null && isHeadingDuplicate(first, chapterTitle)) {
+        paragraphs.removeAt(0)
+    }
+    return paragraphs
+}
+
+private fun isHeadingDuplicate(firstParagraph: String, chapterTitle: String): Boolean {
+    val first = normalizeHeading(firstParagraph.lineSequence().firstOrNull().orEmpty())
+    val title = normalizeHeading(chapterTitle)
+    return first == title || title.endsWith(first) || first.endsWith(title)
+}
+
+private fun normalizeHeading(value: String): String =
+    value.lowercase(Locale.ROOT)
+        .replace(Regex("[^\p{L}\p{N}]+"), " ")
+        .trim()

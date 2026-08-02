@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,7 +35,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.LibraryRepository
+import com.dollarreader.app.data.importer.LocalBookImporter
 import com.dollarreader.app.data.local.DollarReaderDatabase
+import com.dollarreader.app.model.ReaderChapterContent
 import com.dollarreader.app.ui.screens.BookDetailsScreen
 import com.dollarreader.app.ui.screens.HomeScreen
 import com.dollarreader.app.ui.screens.LibraryScreen
@@ -67,6 +70,9 @@ fun DollarReaderApp() {
     val context = LocalContext.current.applicationContext
     val repository = remember(context) {
         LibraryRepository(DollarReaderDatabase.getInstance(context))
+    }
+    val importer = remember(context, repository) {
+        LocalBookImporter(context, repository)
     }
     val books by repository.books.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -139,12 +145,14 @@ fun DollarReaderApp() {
                     LibraryScreen(
                         books = books,
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onImport = importer::importBook,
                     )
                 }
                 composable(Routes.Downloads) {
                     LibraryScreen(
                         books = books.filter { it.totalChapters > 0 },
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onImport = importer::importBook,
                     )
                 }
                 composable(Routes.Settings) {
@@ -178,8 +186,16 @@ fun DollarReaderApp() {
                     if (book == null) {
                         LoadingScreen()
                     } else {
+                        val chapter by produceState<ReaderChapterContent?>(
+                            initialValue = null,
+                            key1 = book.id,
+                            key2 = book.currentChapter,
+                        ) {
+                            value = repository.loadChapter(book.id, book.currentChapter)
+                        }
                         ReaderScreen(
                             book = book,
+                            chapter = chapter,
                             onBack = { navController.popBackStack() },
                             onProgressChangeFinished = { progress ->
                                 scope.launch {

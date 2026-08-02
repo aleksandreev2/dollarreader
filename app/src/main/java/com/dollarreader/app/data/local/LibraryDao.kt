@@ -47,6 +47,12 @@ interface LibraryDao {
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     fun observeTitleWithVolumes(titleId: String): Flow<TitleWithVolumes?>
 
+    @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
+    suspend fun titleById(titleId: String): TitleEntity?
+
+    @Query("SELECT * FROM reading_progress WHERE titleId = :titleId LIMIT 1")
+    suspend fun progressByTitle(titleId: String): ReadingProgressEntity?
+
     @Query("SELECT COUNT(*) FROM titles")
     suspend fun titleCount(): Int
 
@@ -73,10 +79,31 @@ interface LibraryDao {
     suspend fun insertChapters(chapters: List<ChapterEntity>)
 
     @Upsert
+    suspend fun upsertTitle(title: TitleEntity)
+
+    @Upsert
+    suspend fun upsertVolumes(volumes: List<VolumeEntity>)
+
+    @Upsert
+    suspend fun upsertChapters(chapters: List<ChapterEntity>)
+
+    @Upsert
     suspend fun upsertReadingProgress(progress: ReadingProgressEntity)
 
     @Upsert
     suspend fun upsertChapterStates(states: List<ChapterStateEntity>)
+
+    @Query("UPDATE chapters SET sortOrder = sortOrder + :offset WHERE titleId = :titleId")
+    suspend fun shiftChapterSortOrders(titleId: String, offset: Int)
+
+    @Query("UPDATE volumes SET sortOrder = sortOrder + :offset WHERE titleId = :titleId")
+    suspend fun shiftVolumeSortOrders(titleId: String, offset: Int)
+
+    @Query("DELETE FROM chapters WHERE titleId = :titleId AND id NOT IN (:activeIds)")
+    suspend fun deleteChaptersNotIn(titleId: String, activeIds: List<String>)
+
+    @Query("DELETE FROM volumes WHERE titleId = :titleId AND id NOT IN (:activeIds)")
+    suspend fun deleteVolumesNotIn(titleId: String, activeIds: List<String>)
 
     @Query("UPDATE titles SET lastOpenedAt = :openedAt, updatedAt = :openedAt WHERE id = :titleId")
     suspend fun touchTitle(titleId: String, openedAt: Long)
