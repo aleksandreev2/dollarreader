@@ -1,5 +1,6 @@
 package com.dollarreader.app.ui.screens
 
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,7 +37,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -45,6 +47,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -77,9 +81,13 @@ fun ReaderScreen(
     chapter: ReaderChapterContent?,
     preferences: ReaderPreferences,
     initialPosition: ChapterReadingPosition?,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
     onBack: () -> Unit,
     onPreferencesChange: (ReaderPreferences) -> Unit,
     onPositionChange: (ChapterReadingPosition) -> Unit,
+    onPreviousChapter: (ChapterReadingPosition?) -> Unit,
+    onNextChapter: (ChapterReadingPosition?) -> Unit,
 ) {
     val chapterTitle = chapter?.title ?: "Глава ${book.currentChapter}"
     val paragraphs = remember(chapter?.id, chapter?.text) {
@@ -88,8 +96,11 @@ fun ReaderScreen(
     val listState = rememberLazyListState()
     val palette = readerPalette(preferences.colorTheme)
     val fontFamily = preferences.font.toFontFamily()
+    val swipeThresholdPx = with(LocalDensity.current) { SWIPE_THRESHOLD_DP.dp.toPx() }
     var showSettings by remember { mutableStateOf(false) }
     var restoredChapterId by remember { mutableStateOf<String?>(null) }
+    var navigationRequestedForChapter by remember { mutableStateOf<String?>(null) }
+    var hasUserScrolled by remember(chapter?.id) { mutableStateOf(false) }
     var chapterProgress by remember(chapter?.id, initialPosition?.progress) {
         mutableFloatStateOf(initialPosition?.progress ?: 0f)
     }
@@ -106,10 +117,16 @@ fun ReaderScreen(
         } else {
             scrollOffset.toFloat() / currentItem.size.toFloat()
         }
-        val progress = if (totalItems <= 1) {
-            0f
-        } else {
-            ((itemIndex + itemFraction) / (totalItems - 1).toFloat()).coerceIn(0f, 1f)
+        val reachedEnd = totalItems > 1 &&
+            !listState.canScrollForward &&
+            (hasUserScrolled || itemIndex > 0 || scrollOffset > 0)
+        val progress = when {
+            reachedEnd -> 1f
+            totalItems <= 1 -> 0f
+            else -> (
+                (itemIndex + itemFraction) /
+                    (totalItems - 1).toFloat()
+                ).coerceIn(0f, 1f)
         }
         return ChapterReadingPosition(
             chapterId = currentChapter.id,
@@ -117,6 +134,26 @@ fun ReaderScreen(
             firstVisibleItemScrollOffset = scrollOffset,
             progress = progress,
         )
+    }
+
+    fun requestChapterNavigation(forward: Boolean) {
+        val currentChapter = chapter ?: return
+        if (navigationRequestedForChapter == currentChapter.id) return
+        if (forward && !canGoNext) return
+        if (!forward && !canGoPrevious) return
+
+        navigationRequestedForChapter = currentChapter.id
+        val position = currentPosition()
+        if (forward) {
+            onNextChapter(position)
+        } else {
+            onPreviousChapter(position)
+        }
+    }
+
+    LaunchedEffect(chapter?.id) {
+        navigationRequestedForChapter = null
+        hasUserScrolled = false
     }
 
     LaunchedEffect(
@@ -148,22 +185,18 @@ fun ReaderScreen(
         if (restoredChapterId != currentChapter.id) return@LaunchedEffect
 
         snapshotFlow {
-            Triple(
-                listState.firstVisibleItemIndex,
-                listState.firstVisibleItemScrollOffset,
-                listState.layoutInfo.totalItemsCount,
+            ReaderScrollSnapshot(
+                itemIndex = listState.firstVisibleItemIndex,
+                scrollOffset = listState.firstVisibleItemScrollOffset,
+                totalItems = listState.layoutInfo.totalItemsCount,
+                isScrolling = listState.isScrollInProgress,
             )
-        }.collectLatest {
+        }.collectLatest { snapshot ->
+            if (snapshot.isScrolling) hasUserScrolled = true
             val position = currentPosition() ?: return@collectLatest
             chapterProgress = position.progress
             delay(POSITION_SAVE_DELAY_MS)
             onPositionChange(position)
-        }
-    }
-
-    DisposableEffect(chapter?.id) {
-        onDispose {
-            currentPosition()?.let(onPositionChange)
         }
     }
 
@@ -203,7 +236,12 @@ fun ReaderScreen(
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onBack) {
+                IconButton(
+                    onClick = {
+                        currentPosition()?.let(onPositionChange)
+                        onBack()
+                    },
+                ) {
                     Icon(
                         Icons.Outlined.ArrowBack,
                         contentDescription = "Назад",
@@ -246,7 +284,26 @@ fun ReaderScreen(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .pointerInput(chapter?.id, canGoPrevious, canGoNext) {
+                        var horizontalDistance = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { horizontalDistance = 0f },
+                            onHorizontalDrag = { _, dragAmount ->
+                                horizontalDistance += dragAmount
+                            },
+                            onDragCancel = { horizontalDistance = 0f },
+                            onDragEnd = {
+                                when {
+                                    horizontalDistance <= -swipeThresholdPx ->
+                                        requestChapterNavigation(forward = true)
+                                    horizontalDistance >= swipeThresholdPx ->
+                                        requestChapterNavigation(forward = false)
+                                }
+                                horizontalDistance = 0f
+                            },
+                        )
+                    },
                 contentAlignment = Alignment.TopCenter,
             ) {
                 LazyColumn(
@@ -324,7 +381,7 @@ fun ReaderScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     LinearProgressIndicator(
                         progress = { chapterProgress.coerceIn(0f, 1f) },
@@ -332,26 +389,65 @@ fun ReaderScreen(
                         color = palette.accent,
                         trackColor = palette.track,
                     )
-                    Spacer(Modifier.height(9.dp))
+                    Spacer(Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "${(chapterProgress * 100).toInt()}%",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.text,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            "${book.currentChapter} из ${book.totalChapters}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.secondaryText,
-                        )
-                        Spacer(Modifier.weight(1f))
+                        IconButton(
+                            onClick = {
+                                requestChapterNavigation(forward = false)
+                            },
+                            enabled = canGoPrevious &&
+                                navigationRequestedForChapter != chapter?.id,
+                            modifier = Modifier.size(42.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.ChevronLeft,
+                                contentDescription = "Предыдущая глава",
+                                tint = if (canGoPrevious) {
+                                    palette.accent
+                                } else {
+                                    palette.secondaryText
+                                },
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                "${book.currentChapter} из ${book.totalChapters}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.text,
+                            )
+                            Text(
+                                "${(chapterProgress * 100).toInt()}% главы",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.secondaryText,
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                requestChapterNavigation(forward = true)
+                            },
+                            enabled = canGoNext &&
+                                navigationRequestedForChapter != chapter?.id,
+                            modifier = Modifier.size(42.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.ChevronRight,
+                                contentDescription = "Следующая глава",
+                                tint = if (canGoNext) {
+                                    palette.accent
+                                } else {
+                                    palette.secondaryText
+                                },
+                            )
+                        }
                         IconButton(
                             onClick = { showSettings = true },
-                            modifier = Modifier.size(34.dp),
+                            modifier = Modifier.size(38.dp),
                         ) {
                             Icon(
                                 Icons.Outlined.TextFields,
@@ -426,6 +522,13 @@ private data class ReaderPalette(
     val track: Color,
 )
 
+private data class ReaderScrollSnapshot(
+    val itemIndex: Int,
+    val scrollOffset: Int,
+    val totalItems: Int,
+    val isScrolling: Boolean,
+)
+
 private fun String.toReaderParagraphs(chapterTitle: String): List<String> {
     val paragraphs = trim()
         .split(Regex("""\n[\t ]*\n+"""))
@@ -452,3 +555,4 @@ private fun normalizeHeading(value: String): String =
         .trim()
 
 private const val POSITION_SAVE_DELAY_MS = 550L
+private const val SWIPE_THRESHOLD_DP = 72
