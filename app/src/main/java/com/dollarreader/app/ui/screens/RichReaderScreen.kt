@@ -86,8 +86,12 @@ fun RichReaderScreen(
     onNextChapter: (ChapterReadingPosition?) -> Unit,
 ) {
     val palette = richPalette(preferences.colorTheme)
+    val styleScript = remember(preferences, palette) {
+        buildStyleScript(preferences, palette)
+    }
     val scope = rememberCoroutineScope()
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var requestedChapterId by remember { mutableStateOf<String?>(null) }
     var loadedChapterId by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var controlsVisible by remember(chapter?.id) { mutableStateOf(true) }
@@ -96,9 +100,9 @@ fun RichReaderScreen(
         mutableFloatStateOf(initialPosition?.progress ?: 0f)
     }
     var saveJob by remember { mutableStateOf<Job?>(null) }
+
     val latestChapter by rememberUpdatedState(chapter)
-    val latestPreferences by rememberUpdatedState(preferences)
-    val latestPalette by rememberUpdatedState(palette)
+    val latestStyleScript by rememberUpdatedState(styleScript)
     val latestInitialPosition by rememberUpdatedState(initialPosition)
     val latestKeepControlsVisible by rememberUpdatedState(preferences.keepControlsVisible)
     val latestOnPositionChange by rememberUpdatedState(onPositionChange)
@@ -154,10 +158,10 @@ fun RichReaderScreen(
         if (preferences.keepControlsVisible) controlsVisible = true
     }
 
-    LaunchedEffect(preferences, chapter?.id, loadedChapterId) {
+    LaunchedEffect(styleScript, chapter?.id, loadedChapterId) {
         val view = webView ?: return@LaunchedEffect
         if (loadedChapterId != chapter?.id) return@LaunchedEffect
-        view.evaluateJavascript(buildStyleScript(preferences, palette), null)
+        applyReaderStyle(view, styleScript)
     }
 
     DisposableEffect(Unit) {
@@ -166,6 +170,7 @@ fun RichReaderScreen(
             currentPosition()?.let(onPositionChange)
             webView?.apply {
                 stopLoading()
+                setOnScrollChangeListener(null)
                 destroy()
             }
         }
@@ -275,12 +280,17 @@ fun RichReaderScreen(
                                 request: WebResourceRequest?,
                             ): Boolean = true
 
+                            override fun onPageCommitVisible(view: WebView, url: String?) {
+                                applyReaderStyle(view, latestStyleScript)
+                            }
+
                             override fun onPageFinished(view: WebView, url: String?) {
                                 val currentChapter = latestChapter
                                 loadedChapterId = currentChapter?.id
-                                view.evaluateJavascript(
-                                    buildStyleScript(latestPreferences, latestPalette),
-                                    null,
+                                applyReaderStyle(view, latestStyleScript)
+                                view.postDelayed(
+                                    { applyReaderStyle(view, latestStyleScript) },
+                                    STYLE_REAPPLY_DELAY_MS,
                                 )
                                 val offset = latestInitialPosition
                                     ?.takeIf { it.chapterId == currentChapter?.id }
@@ -319,20 +329,25 @@ fun RichReaderScreen(
                 },
                 update = { view ->
                     view.setBackgroundColor(palette.background.toArgb())
-                    val path = chapter?.localPath
-                    if (!path.isNullOrBlank() && loadedChapterId != chapter.id) {
+                    val currentChapter = chapter
+                    val path = currentChapter?.localPath
+                    if (!path.isNullOrBlank() && requestedChapterId != currentChapter.id) {
+                        requestedChapterId = currentChapter.id
+                        loadedChapterId = null
                         val file = File(path)
                         if (file.isFile) {
                             view.loadUrl(Uri.fromFile(file).toString())
                         } else {
                             view.loadDataWithBaseURL(
                                 null,
-                                "<html><body><p>Файл главы недоступен.</p></body></html>",
+                                missingChapterHtml(palette),
                                 "text/html",
                                 "utf-8",
                                 null,
                             )
                         }
+                    } else if (loadedChapterId == currentChapter?.id) {
+                        applyReaderStyle(view, styleScript)
                     }
                 },
             )
@@ -414,6 +429,16 @@ private fun webProgress(view: WebView): Float {
     return (view.scrollY.toFloat() / maximum.toFloat()).coerceIn(0f, 1f)
 }
 
+private fun applyReaderStyle(view: WebView, script: String) {
+    if (view.isDestroyedCompat()) return
+    view.evaluateJavascript(script, null)
+}
+
+private fun WebView.isDestroyedCompat(): Boolean = runCatching {
+    progress
+    false
+}.getOrDefault(true)
+
 private fun buildStyleScript(
     preferences: ReaderPreferences,
     palette: RichReaderPalette,
@@ -424,11 +449,23 @@ private fun buildStyleScript(
         ReaderFontOption.SANS_SERIF -> "Arial, sans-serif"
         ReaderFontOption.MONOSPACE -> "monospace"
     }
+    val background = palette.background.toCss()
+    val text = palette.text.toCss()
+    val accent = palette.accent.toCss()
+    val track = palette.track.toCss()
+    val selection = palette.selection.toCss()
     val css = """
-        :root { color-scheme: light; }
+        :root {
+            color-scheme: ${if (palette.isDark) "dark" else "light"};
+            background-color: $background !important;
+        }
         html, body {
-            background: ${palette.background.toCss()} !important;
-            color: ${palette.text.toCss()} !important;
+            min-height: 100% !important;
+            background-color: $background !important;
+            color: $text !important;
+            -webkit-text-fill-color: $text !important;
+            visibility: visible !important;
+            opacity: 1 !important;
         }
         body {
             font-family: $family !important;
@@ -439,69 +476,114 @@ private fun buildStyleScript(
             padding-right: ${preferences.horizontalPaddingDp}px !important;
             margin-left: auto !important;
             margin-right: auto !important;
+            box-sizing: border-box !important;
         }
-        body, body p, body div, body span, body section, body article,
-        body blockquote, body li, body td, body th, body h1, body h2,
-        body h3, body h4, body h5, body h6, body em, body strong,
-        body small, body code, body pre {
-            color: ${palette.text.toCss()} !important;
+        body *:not(img):not(svg):not(path):not(video):not(canvas) {
+            color: $text !important;
+            -webkit-text-fill-color: $text !important;
         }
         body p, body div, body span, body section, body article,
         body blockquote, body li, body td, body th, body h1, body h2,
-        body h3, body h4, body h5, body h6 {
+        body h3, body h4, body h5, body h6, body pre, body code {
             background-color: transparent !important;
         }
-        p { margin-top: 0; margin-bottom: ${preferences.paragraphSpacingDp}px !important; }
-        p { text-indent: ${preferences.firstLineIndentEm}em; }
-        img, svg { max-width: 100% !important; height: auto !important; }
-        a, a * { color: ${palette.accent.toCss()} !important; }
-        hr { border-color: ${palette.track.toCss()} !important; }
-        table, td, th { border-color: ${palette.track.toCss()} !important; }
+        p {
+            margin-top: 0 !important;
+            margin-bottom: ${preferences.paragraphSpacingDp}px !important;
+            text-indent: ${preferences.firstLineIndentEm}em !important;
+        }
+        img, svg, video, canvas {
+            max-width: 100% !important;
+            height: auto !important;
+        }
+        a, a * {
+            color: $accent !important;
+            -webkit-text-fill-color: $accent !important;
+        }
+        hr { border-color: $track !important; }
+        table, td, th { border-color: $track !important; }
         ::selection {
-            background: ${palette.selection.toCss()} !important;
-            color: ${palette.text.toCss()} !important;
+            background: $selection !important;
+            color: $text !important;
+            -webkit-text-fill-color: $text !important;
         }
     """.trimIndent()
     val quotedCss = JSONObject.quote(css)
+    val quotedBackground = JSONObject.quote(background)
+    val quotedText = JSONObject.quote(text)
     return """
         (function() {
+            var root = document.documentElement;
+            var body = document.body;
+            if (root) {
+                root.style.setProperty('background-color', $quotedBackground, 'important');
+                root.style.setProperty('color', $quotedText, 'important');
+                root.style.setProperty('-webkit-text-fill-color', $quotedText, 'important');
+            }
+            if (body) {
+                body.style.setProperty('background-color', $quotedBackground, 'important');
+                body.style.setProperty('color', $quotedText, 'important');
+                body.style.setProperty('-webkit-text-fill-color', $quotedText, 'important');
+                body.style.setProperty('visibility', 'visible', 'important');
+                body.style.setProperty('opacity', '1', 'important');
+            }
             var style = document.getElementById('dollarreader-style');
             if (!style) {
                 style = document.createElement('style');
                 style.id = 'dollarreader-style';
-                document.head.appendChild(style);
+                (document.head || root).appendChild(style);
             }
             style.textContent = $quotedCss;
+            return true;
         })();
     """.trimIndent()
 }
 
+private fun missingChapterHtml(palette: RichReaderPalette): String = """
+    <!doctype html>
+    <html>
+        <head><meta charset="utf-8"></head>
+        <body style="background:${palette.background.toCss()};color:${palette.text.toCss()};">
+            <p>Файл главы недоступен.</p>
+        </body>
+    </html>
+""".trimIndent()
+
 @Composable
 private fun richPalette(theme: ReaderColorTheme): RichReaderPalette = when (theme) {
-    ReaderColorTheme.SYSTEM -> RichReaderPalette(
-        background = MaterialTheme.colorScheme.background,
-        surface = MaterialTheme.colorScheme.surface,
-        text = MaterialTheme.colorScheme.onBackground,
-        secondaryText = MaterialTheme.colorScheme.onSurfaceVariant,
-        accent = MaterialTheme.colorScheme.primary,
-        track = MaterialTheme.colorScheme.surfaceVariant,
-        selection = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-    )
+    ReaderColorTheme.SYSTEM -> {
+        val background = MaterialTheme.colorScheme.background
+        val text = MaterialTheme.colorScheme.onBackground
+        RichReaderPalette(
+            background = background,
+            surface = MaterialTheme.colorScheme.surface,
+            text = text,
+            secondaryText = MaterialTheme.colorScheme.onSurfaceVariant,
+            accent = MaterialTheme.colorScheme.primary,
+            track = MaterialTheme.colorScheme.surfaceVariant,
+            selection = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+            isDark = background.luminanceCompat() < 0.45f,
+        )
+    }
     ReaderColorTheme.PAPER -> RichReaderPalette(
         Color(0xFFFFFBF4), Color(0xFFF6EFE5), Color(0xFF292521),
         Color(0xFF6D6258), Color(0xFF76558F), Color(0xFFE3D8CC), Color(0xFFD7C2EA),
+        false,
     )
     ReaderColorTheme.SEPIA -> RichReaderPalette(
         Color(0xFFF1E6CC), Color(0xFFE8D9B9), Color(0xFF3A3027),
         Color(0xFF71614F), Color(0xFF7A536E), Color(0xFFD7C5A2), Color(0xFFC9A8BA),
+        false,
     )
     ReaderColorTheme.NIGHT -> RichReaderPalette(
         Color(0xFF17181D), Color(0xFF23242B), Color(0xFFE8E5EB),
         Color(0xFFB9B5C0), Color(0xFFCEAAFF), Color(0xFF393A43), Color(0xFF5A4075),
+        true,
     )
     ReaderColorTheme.BLACK -> RichReaderPalette(
         Color.Black, Color(0xFF111111), Color(0xFFF1F1F1),
         Color(0xFFBDBDBD), Color(0xFFD5B7FF), Color(0xFF2A2A2A), Color(0xFF5A4075),
+        true,
     )
 }
 
@@ -513,6 +595,7 @@ private data class RichReaderPalette(
     val accent: Color,
     val track: Color,
     val selection: Color,
+    val isDark: Boolean,
 )
 
 private fun Color.toArgb(): Int = AndroidColor.argb(
@@ -529,6 +612,10 @@ private fun Color.toCss(): String = String.format(
     (blue * 255).toInt(),
 )
 
+private fun Color.luminanceCompat(): Float =
+    (0.2126f * red) + (0.7152f * green) + (0.0722f * blue)
+
 private const val RICH_POSITION_SAVE_DELAY_MS = 650L
+private const val STYLE_REAPPLY_DELAY_MS = 120L
 private const val RICH_SCROLL_SLOP_PX = 4
 private const val RICH_TOP_REVEAL_PX = 2
