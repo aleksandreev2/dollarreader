@@ -48,7 +48,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.dollarreader.app.data.importer.ImportChapterChange
 import com.dollarreader.app.data.importer.ImportPreview
 import com.dollarreader.app.data.importer.ImportResult
 import com.dollarreader.app.model.Book
@@ -113,11 +115,7 @@ fun LibraryScreen(
                             ImportSource.Folder -> onImportFolder(pending.uri)
                         }
                     }.onSuccess { result ->
-                        val action = if (result.updatedExistingTitle) "обновлён" else "добавлен"
-                        notice = ImportNotice(
-                            "${result.title}: $action, глав — ${result.chaptersImported}",
-                            false,
-                        )
+                        notice = ImportNotice(result.successMessage(), false)
                         pendingImport = null
                     }.onFailure { error ->
                         notice = ImportNotice(error.message ?: "Не удалось импортировать источник", true)
@@ -225,6 +223,7 @@ private fun ImportPreviewDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val detailedFolderDiff = preview.format == "ПАПКА/TXT"
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -249,7 +248,17 @@ private fun ImportPreviewDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (preview.updatedExistingTitle) {
+                if (preview.updatedExistingTitle && detailedFolderDiff) {
+                    ChangeSummaryCard(preview)
+                    Text(
+                        if (preview.changes.hasChanges) {
+                            "Будут записаны только новые или изменённые главы. Прогресс чтения сохранится."
+                        } else {
+                            "Изменений не найдено. Повторное копирование глав не требуется."
+                        },
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else if (preview.updatedExistingTitle) {
                     Text(
                         "Существующий тайтл будет обновлён. Прогресс и прочитанные главы сохранятся.",
                         color = MaterialTheme.colorScheme.primary,
@@ -269,12 +278,27 @@ private fun ImportPreviewDialog(
                             )
                         }
                         items(volume.chapters, key = { "${volume.name}-${it.sourcePath}" }) { chapter ->
-                            Text(
-                                text = chapter.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 8.dp, top = 3.dp, bottom = 3.dp),
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 8.dp, top = 3.dp, bottom = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = chapter.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (detailedFolderDiff) {
+                                    Text(
+                                        text = chapter.change.label(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = chapter.change.statusColor(),
+                                        modifier = Modifier.padding(start = 8.dp),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -286,13 +310,68 @@ private fun ImportPreviewDialog(
                     CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(if (preview.updatedExistingTitle) "Обновить" else "Импортировать")
+                Text(
+                    when {
+                        preview.updatedExistingTitle && detailedFolderDiff && !preview.changes.hasChanges -> "Готово"
+                        preview.updatedExistingTitle -> "Обновить"
+                        else -> "Импортировать"
+                    },
+                )
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !isImporting) { Text("Отмена") }
         },
     )
+}
+
+@Composable
+private fun ChangeSummaryCard(preview: ImportPreview) {
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text("Изменения", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Добавлено: ${preview.changes.added} · изменено: ${preview.changes.changed}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Удалено: ${preview.changes.removed} · без изменений: ${preview.changes.unchanged}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImportChapterChange.statusColor(): Color = when (this) {
+    ImportChapterChange.ADDED -> MaterialTheme.colorScheme.primary
+    ImportChapterChange.CHANGED -> MaterialTheme.colorScheme.tertiary
+    ImportChapterChange.UNCHANGED -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+private fun ImportChapterChange.label(): String = when (this) {
+    ImportChapterChange.ADDED -> "Новая"
+    ImportChapterChange.CHANGED -> "Изменена"
+    ImportChapterChange.UNCHANGED -> "Без изменений"
+}
+
+private fun ImportResult.successMessage(): String {
+    if (format != "ПАПКА/TXT") {
+        val action = if (updatedExistingTitle) "обновлён" else "добавлен"
+        return "$title: $action, глав — $chaptersImported"
+    }
+    if (!changes.hasChanges) return "$title: изменений нет, глав — $chaptersImported"
+    val action = if (updatedExistingTitle) "обновлён" else "добавлен"
+    return "$title: $action · +${changes.added}, изменено ${changes.changed}, удалено ${changes.removed}"
 }
 
 @Composable
