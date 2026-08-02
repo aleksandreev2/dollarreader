@@ -13,8 +13,8 @@ android {
         applicationId = "com.dollarreader.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.2.0-alpha05"
+        versionCode = 6
+        versionName = "0.2.0-alpha06"
 
         vectorDrawables {
             useSupportLibrary = true
