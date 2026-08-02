@@ -36,6 +36,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.LibraryRepository
 import com.dollarreader.app.data.importer.LocalBookImporter
+import com.dollarreader.app.data.importer.LocalBookPreviewer
 import com.dollarreader.app.data.local.DollarReaderDatabase
 import com.dollarreader.app.model.ReaderChapterContent
 import com.dollarreader.app.ui.screens.BookDetailsScreen
@@ -71,9 +72,8 @@ fun DollarReaderApp() {
     val repository = remember(context) {
         LibraryRepository(DollarReaderDatabase.getInstance(context))
     }
-    val importer = remember(context, repository) {
-        LocalBookImporter(context, repository)
-    }
+    val importer = remember(context, repository) { LocalBookImporter(context, repository) }
+    val previewer = remember(context, repository) { LocalBookPreviewer(context, repository) }
     val books by repository.books.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
@@ -145,6 +145,7 @@ fun DollarReaderApp() {
                     LibraryScreen(
                         books = books,
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onPreviewImport = previewer::previewBook,
                         onImport = importer::importBook,
                     )
                 }
@@ -152,6 +153,7 @@ fun DollarReaderApp() {
                     LibraryScreen(
                         books = books.filter { it.totalChapters > 0 },
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
+                        onPreviewImport = previewer::previewBook,
                         onImport = importer::importBook,
                     )
                 }
@@ -170,10 +172,19 @@ fun DollarReaderApp() {
                     if (book == null) {
                         LoadingScreen()
                     } else {
+                        val contents by repository.observeBookContents(book.id)
+                            .collectAsState(initial = null)
                         BookDetailsScreen(
                             book = book,
+                            contents = contents,
                             onBack = { navController.popBackStack() },
                             onRead = { navController.navigate(Routes.reader(book.id)) },
+                            onChapterClick = { chapterOrder ->
+                                scope.launch {
+                                    repository.openChapter(book.id, chapterOrder)
+                                    navController.navigate(Routes.reader(book.id))
+                                }
+                            },
                         )
                     }
                 }
@@ -198,9 +209,7 @@ fun DollarReaderApp() {
                             chapter = chapter,
                             onBack = { navController.popBackStack() },
                             onProgressChangeFinished = { progress ->
-                                scope.launch {
-                                    repository.saveOverallProgress(book.id, progress)
-                                }
+                                scope.launch { repository.saveOverallProgress(book.id, progress) }
                             },
                         )
                     }
