@@ -135,3 +135,27 @@ data class ChapterStateEntity(
     val isRead: Boolean,
     val updatedAt: Long,
 )
+
+@Entity(
+    tableName = "update_history",
+    foreignKeys = [
+        ForeignKey(
+            entity = TitleEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["titleId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [
+        Index(value = ["titleId"]),
+        Index(value = ["titleId", "createdAt"]),
+    ],
+)
+data class UpdateHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val titleId: String,
+    val eventType: String,
+    val details: String,
+    val chapterCount: Int,
+    val createdAt: Long,
+)

@@ -47,8 +47,16 @@ interface LibraryDao {
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     fun observeTitleWithVolumes(titleId: String): Flow<TitleWithVolumes?>
 
+    @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
+    fun observeTitleEntity(titleId: String): Flow<TitleEntity?>
+
     @Query("SELECT * FROM chapter_states WHERE titleId = :titleId")
     fun observeChapterStates(titleId: String): Flow<List<ChapterStateEntity>>
+
+    @Query(
+        "SELECT * FROM update_history WHERE titleId = :titleId ORDER BY createdAt DESC, id DESC LIMIT :limit",
+    )
+    fun observeUpdateHistory(titleId: String, limit: Int = 20): Flow<List<UpdateHistoryEntity>>
 
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     suspend fun titleById(titleId: String): TitleEntity?
@@ -58,6 +66,9 @@ interface LibraryDao {
 
     @Query("SELECT * FROM chapter_states WHERE chapterId = :chapterId LIMIT 1")
     suspend fun chapterStateById(chapterId: String): ChapterStateEntity?
+
+    @Query("SELECT * FROM chapters WHERE titleId = :titleId ORDER BY sortOrder")
+    suspend fun chaptersByTitle(titleId: String): List<ChapterEntity>
 
     @Query("SELECT COUNT(*) FROM titles")
     suspend fun titleCount(): Int
@@ -80,6 +91,9 @@ interface LibraryDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertChapters(chapters: List<ChapterEntity>)
 
+    @Insert
+    suspend fun insertUpdateHistory(history: UpdateHistoryEntity): Long
+
     @Upsert
     suspend fun upsertTitle(title: TitleEntity)
 
@@ -95,6 +109,27 @@ interface LibraryDao {
     @Upsert
     suspend fun upsertChapterStates(states: List<ChapterStateEntity>)
 
+    @Query(
+        """
+        UPDATE titles
+        SET title = :title,
+            author = :author,
+            description = :description,
+            updatedAt = :updatedAt
+        WHERE id = :titleId
+        """,
+    )
+    suspend fun updateTitleMetadata(
+        titleId: String,
+        title: String,
+        author: String,
+        description: String?,
+        updatedAt: Long,
+    ): Int
+
+    @Query("UPDATE titles SET isFavorite = :isFavorite, updatedAt = :updatedAt WHERE id = :titleId")
+    suspend fun updateFavorite(titleId: String, isFavorite: Boolean, updatedAt: Long): Int
+
     @Query("UPDATE chapters SET sortOrder = sortOrder + :offset WHERE titleId = :titleId")
     suspend fun shiftChapterSortOrders(titleId: String, offset: Int)
 
@@ -106,6 +141,23 @@ interface LibraryDao {
 
     @Query("DELETE FROM volumes WHERE titleId = :titleId AND id NOT IN (:activeIds)")
     suspend fun deleteVolumesNotIn(titleId: String, activeIds: List<String>)
+
+    @Query("DELETE FROM titles WHERE id = :titleId")
+    suspend fun deleteTitleById(titleId: String): Int
+
+    @Query(
+        """
+        DELETE FROM update_history
+        WHERE titleId = :titleId
+          AND id NOT IN (
+              SELECT id FROM update_history
+              WHERE titleId = :titleId
+              ORDER BY createdAt DESC, id DESC
+              LIMIT :keep
+          )
+        """,
+    )
+    suspend fun trimUpdateHistory(titleId: String, keep: Int)
 
     @Query("UPDATE titles SET lastOpenedAt = :openedAt, updatedAt = :openedAt WHERE id = :titleId")
     suspend fun touchTitle(titleId: String, openedAt: Long)

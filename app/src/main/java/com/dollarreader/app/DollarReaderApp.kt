@@ -185,10 +185,12 @@ fun DollarReaderApp() {
                     } else {
                         val contents by repository.observeBookContents(book.id)
                             .collectAsState(initial = null)
-                        val storedTitle by repository.observeTitle(book.id)
+                        val management by repository.observeTitleManagement(book.id)
                             .collectAsState(initial = null)
-                        val sourceUri = storedTitle?.title?.sourceUri?.let(Uri::parse)
-                        val sourceFormat = storedTitle?.title?.format
+                        val sourceUri = management?.sourceUri?.let { raw ->
+                            runCatching { Uri.parse(raw) }.getOrNull()
+                        }
+                        val sourceFormat = management?.format
 
                         val previewUpdateAction: (suspend () -> ImportPreview)? =
                             sourceUri?.let { uri ->
@@ -210,6 +212,7 @@ fun DollarReaderApp() {
                         BookDetailsScreen(
                             book = book,
                             contents = contents,
+                            management = management,
                             onBack = { navController.popBackStack() },
                             onRead = { navController.navigate(Routes.reader(book.id)) },
                             onChapterClick = { chapterOrder ->
@@ -217,6 +220,23 @@ fun DollarReaderApp() {
                                     repository.openChapter(book.id, chapterOrder)
                                     navController.navigate(Routes.reader(book.id))
                                 }
+                            },
+                            onSaveMetadata = { title, author, description ->
+                                repository.updateTitleMetadata(
+                                    titleId = book.id,
+                                    title = title,
+                                    author = author,
+                                    description = description,
+                                )
+                            },
+                            onToggleFavorite = { isFavorite ->
+                                repository.setFavorite(book.id, isFavorite)
+                            },
+                            onDelete = {
+                                check(repository.deleteTitle(book.id)) {
+                                    "Тайтл уже удалён или недоступен"
+                                }
+                                navController.popBackStack()
                             },
                             onPreviewUpdate = previewUpdateAction,
                             onApplyUpdate = applyUpdateAction,
