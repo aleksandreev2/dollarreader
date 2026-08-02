@@ -35,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dollarreader.app.data.ChapterNavigationRepository
 import com.dollarreader.app.data.LibraryRepository
 import com.dollarreader.app.data.ReaderSettingsRepository
 import com.dollarreader.app.data.importer.FolderBookImporter
@@ -83,6 +84,9 @@ fun DollarReaderApp() {
     }
     val readerSettingsRepository = remember(database) {
         ReaderSettingsRepository(database)
+    }
+    val chapterNavigationRepository = remember(database) {
+        ChapterNavigationRepository(database)
     }
     val localBookService = remember(context, repository) {
         LocalBookService(context, repository)
@@ -318,6 +322,8 @@ fun DollarReaderApp() {
                             chapter = chapter,
                             preferences = readerPreferences,
                             initialPosition = initialPosition,
+                            canGoPrevious = book.currentChapter > 1,
+                            canGoNext = book.currentChapter < book.totalChapters,
                             onBack = { navController.popBackStack() },
                             onPreferencesChange = { preferences ->
                                 scope.launch {
@@ -333,6 +339,44 @@ fun DollarReaderApp() {
                                         chapterNumber = chapterNumber,
                                         position = position,
                                     )
+                                }
+                            },
+                            onPreviousChapter = { position ->
+                                val currentChapter = chapter
+                                if (currentChapter != null) {
+                                    scope.launch {
+                                        position?.let {
+                                            readerSettingsRepository.savePosition(
+                                                titleId = book.id,
+                                                chapterNumber = currentChapter.sortOrder,
+                                                position = it,
+                                            )
+                                        }
+                                        chapterNavigationRepository.moveToAdjacentChapter(
+                                            titleId = book.id,
+                                            currentChapterId = currentChapter.id,
+                                            forward = false,
+                                        )
+                                    }
+                                }
+                            },
+                            onNextChapter = { position ->
+                                val currentChapter = chapter
+                                if (currentChapter != null) {
+                                    scope.launch {
+                                        position?.let {
+                                            readerSettingsRepository.savePosition(
+                                                titleId = book.id,
+                                                chapterNumber = currentChapter.sortOrder,
+                                                position = it,
+                                            )
+                                        }
+                                        chapterNavigationRepository.moveToAdjacentChapter(
+                                            titleId = book.id,
+                                            currentChapterId = currentChapter.id,
+                                            forward = true,
+                                        )
+                                    }
                                 }
                             },
                         )
