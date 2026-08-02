@@ -16,88 +16,128 @@ import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 class FolderBookImporter(
     private val context: Context,
     private val repository: LibraryRepository,
 ) {
+    @Volatile
+    private var cachedScan: CachedFolderScan? = null
+
     suspend fun previewFolder(treeUri: Uri): ImportPreview = withContext(Dispatchers.IO) {
         val scan = scanFolder(treeUri)
+        cachedScan = CachedFolderScan(treeUri.toString(), System.currentTimeMillis(), scan)
         val title = cleanBookTitle(scan.rootName)
         val titleId = stableId("title", title)
-        val arranged = arrange(scan.candidates)
-        val volumes = arranged.map { volume ->
-            ImportPreviewVolume(
-                name = volume.name,
-                chapters = volume.candidates.map { candidate ->
-                    ImportPreviewChapter(
-                        name = candidate.descriptor.displayName,
-                        number = candidate.descriptor.number,
-                        sourcePath = candidate.relativePath,
-                    )
-                },
-            )
-        }
+        val plannedVolumes = buildPlannedVolumes(titleId, scan.candidates)
+        val existing = loadExistingChapters(titleId)
+        val diff = calculateImportDiff(
+            existing,
+            plannedVolumes.flatMap { volume -> volume.chapters.map { it.toPlannedImportChapter() } },
+        )
+
         ImportPreview(
             titleId = titleId,
             title = title,
             format = "ПАПКА/TXT",
-            totalChapters = volumes.sumOf { it.chapters.size },
+            totalChapters = plannedVolumes.sumOf { it.chapters.size },
             filesSkipped = scan.filesSkipped,
-            updatedExistingTitle = repository.titleExists(titleId),
-            volumes = volumes,
+            updatedExistingTitle = existing.isNotEmpty(),
+            volumes = plannedVolumes.map { volume ->
+                ImportPreviewVolume(
+                    name = volume.name,
+                    chapters = volume.chapters.map { chapter ->
+                        ImportPreviewChapter(
+                            name = chapter.candidate.descriptor.displayName,
+                            number = chapter.candidate.descriptor.number,
+                            sourcePath = chapter.candidate.relativePath,
+                            change = diff.entries.getValue(chapter.id).change,
+                        )
+                    },
+                )
+            },
+            changes = diff.summary,
         )
     }
 
     suspend fun importFolder(treeUri: Uri): ImportResult = withContext(Dispatchers.IO) {
         persistReadPermission(treeUri)
-        val scan = scanFolder(treeUri)
+        val scan = takeCachedScan(treeUri) ?: scanFolder(treeUri)
         val title = cleanBookTitle(scan.rootName)
         val titleId = stableId("title", title)
-        val arranged = arrange(scan.candidates)
-        var globalOrder = 0
+        val plannedVolumes = buildPlannedVolumes(titleId, scan.candidates)
+        val existing = loadExistingChapters(titleId)
+        val diff = calculateImportDiff(
+            existing,
+            plannedVolumes.flatMap { volume -> volume.chapters.map { it.toPlannedImportChapter() } },
+        )
 
-        val volumes = arranged.mapIndexed { volumeIndex, arrangedVolume ->
-            val volumeId = stableId(titleId, "volume:${normalizeKey(arrangedVolume.name)}")
-            val chapters = arrangedVolume.candidates.map { candidate ->
-                globalOrder += 1
-                val chapterId = stableId(titleId, "chapter:${normalizeKey(candidate.relativePath)}")
-                val text = readDocumentText(candidate.documentUri)
-                val finalFile = chapterFile(titleId, chapterId)
-                writeUtf8(finalFile, text)
-                LocalChapterImport(
-                    id = chapterId,
-                    name = candidate.descriptor.displayName,
-                    number = candidate.descriptor.number,
-                    sortOrder = globalOrder,
-                    localPath = finalFile.absolutePath,
-                    contentHash = sha256(text.toByteArray(StandardCharsets.UTF_8)),
-                    wordCount = WORD_PATTERN.findAll(text).count(),
-                )
-            }
-            LocalVolumeImport(
-                id = volumeId,
-                name = arrangedVolume.name,
-                number = volumeNumber(arrangedVolume.name),
-                sortOrder = volumeIndex + 1,
-                chapters = chapters,
+        if (!diff.summary.hasChanges && existing.isNotEmpty()) {
+            cachedScan = null
+            return@withContext ImportResult(
+                titleId = titleId,
+                title = title,
+                chaptersImported = plannedVolumes.sumOf { it.chapters.size },
+                filesSkipped = scan.filesSkipped,
+                format = "ПАПКА/TXT",
+                updatedExistingTitle = true,
+                changes = diff.summary,
             )
         }
 
-        val plan = LocalTitleImport(
-            id = titleId,
-            title = title,
-            author = "Не указан",
-            format = "ПАПКА/TXT",
-            sourceUri = treeUri.toString(),
-            volumes = volumes,
+        val volumes = plannedVolumes.map { volume ->
+            LocalVolumeImport(
+                id = volume.id,
+                name = volume.name,
+                number = volume.number,
+                sortOrder = volume.sortOrder,
+                chapters = volume.chapters.map { chapter ->
+                    val diffEntry = diff.entries.getValue(chapter.id)
+                    val localPath = if (diffEntry.requiresCopy) {
+                        val text = readDocumentText(chapter.candidate.documentUri)
+                        val actualHash = sha256(text.toByteArray(StandardCharsets.UTF_8))
+                        if (actualHash != chapter.candidate.contentHash) {
+                            throw ImportException(
+                                "Файлы в папке изменились после предварительного просмотра. Проверьте импорт ещё раз.",
+                            )
+                        }
+                        val finalFile = chapterFile(titleId, chapter.id)
+                        writeUtf8(finalFile, text)
+                        finalFile.absolutePath
+                    } else {
+                        diffEntry.existingLocalPath
+                            ?: throw ImportException("Не найден локальный файл неизменённой главы")
+                    }
+                    LocalChapterImport(
+                        id = chapter.id,
+                        name = chapter.candidate.descriptor.displayName,
+                        number = chapter.candidate.descriptor.number,
+                        sortOrder = chapter.sortOrder,
+                        localPath = localPath,
+                        contentHash = chapter.candidate.contentHash,
+                        wordCount = chapter.candidate.wordCount,
+                    )
+                },
+            )
+        }
+
+        val updated = repository.importLocalTitle(
+            LocalTitleImport(
+                id = titleId,
+                title = title,
+                author = "Не указан",
+                format = "ПАПКА/TXT",
+                sourceUri = treeUri.toString(),
+                volumes = volumes,
+            ),
         )
-        val updated = repository.importLocalTitle(plan)
         cleanupUnusedChapterFiles(
-            titleId = titleId,
-            activePaths = volumes.flatMap { volume -> volume.chapters }.map { it.localPath }.toSet(),
+            titleId,
+            volumes.flatMap { volume -> volume.chapters }.map { it.localPath }.toSet(),
         )
+        cachedScan = null
 
         ImportResult(
             titleId = titleId,
@@ -106,7 +146,36 @@ class FolderBookImporter(
             filesSkipped = scan.filesSkipped,
             format = "ПАПКА/TXT",
             updatedExistingTitle = updated,
+            changes = diff.summary,
         )
+    }
+
+    private suspend fun loadExistingChapters(titleId: String): Map<String, StoredImportChapter> {
+        val title = repository.observeTitle(titleId).first() ?: return emptyMap()
+        return title.volumes.flatMap { volume ->
+            volume.chapters.map { chapter ->
+                StoredImportChapter(
+                    id = chapter.id,
+                    volumeId = chapter.volumeId,
+                    name = chapter.name,
+                    number = chapter.number,
+                    sortOrder = chapter.sortOrder,
+                    localPath = chapter.localUri,
+                    contentHash = chapter.contentHash,
+                )
+            }
+        }.associateBy { it.id }
+    }
+
+    private fun takeCachedScan(treeUri: Uri): FolderScan? {
+        val cached = cachedScan ?: return null
+        val age = System.currentTimeMillis() - cached.createdAt
+        return if (cached.treeUri == treeUri.toString() && age in 0..SCAN_CACHE_TTL_MS) {
+            cached.scan
+        } else {
+            cachedScan = null
+            null
+        }
     }
 
     private fun scanFolder(treeUri: Uri): FolderScan {
@@ -119,10 +188,7 @@ class FolderBookImporter(
         root.listFiles()
             .sortedBy { it.name?.lowercase(Locale.ROOT).orEmpty() }
             .asReversed()
-            .forEach { child ->
-                val name = safeName(child.name)
-                stack.addLast(PendingDocument(child, name, 1))
-            }
+            .forEach { child -> stack.addLast(PendingDocument(child, safeName(child.name), 1)) }
 
         var seenEntries = 0
         var filesSkipped = 0
@@ -158,12 +224,11 @@ class FolderBookImporter(
                     .sortedBy { it.name?.lowercase(Locale.ROOT).orEmpty() }
                     .asReversed()
                     .forEach { child ->
-                        val childName = safeName(child.name)
                         stack.addLast(
                             PendingDocument(
-                                document = child,
-                                relativePath = "$relativePath/$childName",
-                                depth = pending.depth + 1,
+                                child,
+                                "$relativePath/${safeName(child.name)}",
+                                pending.depth + 1,
                             ),
                         )
                     }
@@ -186,7 +251,8 @@ class FolderBookImporter(
                 filesSkipped += 1
                 continue
             }
-            totalBytes += text.toByteArray(StandardCharsets.UTF_8).size
+            val utf8Bytes = text.toByteArray(StandardCharsets.UTF_8)
+            totalBytes += utf8Bytes.size
             if (totalBytes > MAX_TOTAL_IMPORT_BYTES) {
                 throw ImportException("Папка слишком большая для безопасного импорта")
             }
@@ -199,10 +265,12 @@ class FolderBookImporter(
                 documentUri = document.uri,
                 relativePath = relativePath,
                 descriptor = describeChapter(
-                    fileName = name.ifBlank { relativePath.substringAfterLast('/') },
-                    firstLine = firstMeaningfulLine(text),
-                    relativePath = relativePath,
+                    name.ifBlank { relativePath.substringAfterLast('/') },
+                    firstMeaningfulLine(text),
+                    relativePath,
                 ),
+                contentHash = sha256(utf8Bytes),
+                wordCount = WORD_PATTERN.findAll(text).count(),
             )
         }
 
@@ -212,7 +280,10 @@ class FolderBookImporter(
         return FolderScan(rootName, candidates, filesSkipped)
     }
 
-    private fun arrange(candidates: List<FolderCandidate>): List<ArrangedVolume> {
+    private fun buildPlannedVolumes(
+        titleId: String,
+        candidates: List<FolderCandidate>,
+    ): List<PlannedFolderVolume> {
         val sorted = candidates.sortedWith(
             compareBy<FolderCandidate>({ it.descriptor.kindRank }, { it.descriptor.numericOrder })
                 .thenBy { naturalSortKey(it.relativePath) },
@@ -221,7 +292,25 @@ class FolderBookImporter(
         val volumeNames = grouped.keys.sortedWith(
             compareBy<String> { volumeSortOrder(it) }.thenBy { naturalSortKey(it) },
         )
-        return volumeNames.map { name -> ArrangedVolume(name, grouped.getValue(name)) }
+        var globalOrder = 0
+        return volumeNames.mapIndexed { volumeIndex, name ->
+            val volumeId = stableId(titleId, "volume:${normalizeKey(name)}")
+            PlannedFolderVolume(
+                id = volumeId,
+                name = name,
+                number = volumeNumber(name),
+                sortOrder = volumeIndex + 1,
+                chapters = grouped.getValue(name).map { candidate ->
+                    globalOrder += 1
+                    PlannedFolderChapter(
+                        id = stableId(titleId, "chapter:${normalizeKey(candidate.relativePath)}"),
+                        volumeId = volumeId,
+                        sortOrder = globalOrder,
+                        candidate = candidate,
+                    )
+                },
+            )
+        }
     }
 
     private fun readDocumentText(uri: Uri): String {
@@ -279,9 +368,12 @@ class FolderBookImporter(
     private fun decodeText(bytes: ByteArray): String {
         if (bytes.isEmpty()) return ""
         val (charset, offset) = when {
-            bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() -> StandardCharsets.UTF_8 to 3
-            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() -> StandardCharsets.UTF_16LE to 2
-            bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() -> StandardCharsets.UTF_16BE to 2
+            bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() ->
+                StandardCharsets.UTF_8 to 3
+            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
+                StandardCharsets.UTF_16LE to 2
+            bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() ->
+                StandardCharsets.UTF_16BE to 2
             else -> null to 0
         }
         if (charset != null) {
@@ -339,11 +431,7 @@ class FolderBookImporter(
 
     private fun mergeHeading(prefix: String, firstLine: String?): String {
         if (firstLine.isNullOrBlank()) return prefix
-        return if (normalizeKey(firstLine).startsWith(normalizeKey(prefix))) {
-            firstLine
-        } else {
-            "$prefix. $firstLine"
-        }
+        return if (normalizeKey(firstLine).startsWith(normalizeKey(prefix))) firstLine else "$prefix. $firstLine"
     }
 
     private fun cleanBookTitle(raw: String): String = raw
@@ -360,18 +448,8 @@ class FolderBookImporter(
 
     private fun isIgnoredPath(path: String): Boolean {
         val ignored = setOf(
-            "служебные файлы",
-            "служебное",
-            "service files",
-            "service",
-            "равка",
-            "равки",
-            "raw",
-            "raws",
-            "macosx",
-            "git",
-            "архив устаревших",
-            "metadata",
+            "служебные файлы", "служебное", "service files", "service", "равка", "равки",
+            "raw", "raws", "macosx", "git", "архив устаревших", "metadata",
         )
         return path.split('/').any { normalizeKey(it) in ignored }
     }
@@ -407,6 +485,16 @@ class FolderBookImporter(
             "%02x".format(it.toInt() and 0xff)
         }
 
+    private fun PlannedFolderChapter.toPlannedImportChapter(): PlannedImportChapter =
+        PlannedImportChapter(
+            id = id,
+            volumeId = volumeId,
+            name = candidate.descriptor.displayName,
+            number = candidate.descriptor.number,
+            sortOrder = sortOrder,
+            contentHash = candidate.contentHash,
+        )
+
     private data class PendingDocument(
         val document: DocumentFile,
         val relativePath: String,
@@ -417,6 +505,8 @@ class FolderBookImporter(
         val documentUri: Uri,
         val relativePath: String,
         val descriptor: ChapterDescriptor,
+        val contentHash: String,
+        val wordCount: Int,
     )
 
     private data class FolderScan(
@@ -425,9 +515,25 @@ class FolderBookImporter(
         val filesSkipped: Int,
     )
 
-    private data class ArrangedVolume(
+    private data class CachedFolderScan(
+        val treeUri: String,
+        val createdAt: Long,
+        val scan: FolderScan,
+    )
+
+    private data class PlannedFolderVolume(
+        val id: String,
         val name: String,
-        val candidates: List<FolderCandidate>,
+        val number: String?,
+        val sortOrder: Int,
+        val chapters: List<PlannedFolderChapter>,
+    )
+
+    private data class PlannedFolderChapter(
+        val id: String,
+        val volumeId: String,
+        val sortOrder: Int,
+        val candidate: FolderCandidate,
     )
 
     private data class ChapterDescriptor(
@@ -442,6 +548,7 @@ class FolderBookImporter(
         const val MAX_FOLDER_DEPTH = 24
         const val MAX_SINGLE_CHAPTER_BYTES = 8L * 1024L * 1024L
         const val MAX_TOTAL_IMPORT_BYTES = 192L * 1024L * 1024L
+        const val SCAN_CACHE_TTL_MS = 5L * 60L * 1000L
         val CHAPTER_NUMBER = Regex("""(?i)(?:глава|chapter|chap|ch)[ _.-]*(\d+)""")
         val VOLUME_PATTERN = Regex("""(?i)(?:том|volume|vol)[ _.-]*\d+""")
         val VOLUME_NUMBER = Regex("""(\d+)""")
