@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,13 +21,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,26 +61,42 @@ fun LibraryScreen(
     onBookClick: (Book) -> Unit,
     onPreviewImport: suspend (Uri) -> ImportPreview,
     onImport: suspend (Uri) -> ImportResult,
+    onPreviewFolder: suspend (Uri) -> ImportPreview,
+    onImportFolder: suspend (Uri) -> ImportResult,
 ) {
     val scope = rememberCoroutineScope()
     var isWorking by rememberSaveable { mutableStateOf(false) }
+    var addMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var notice by remember { mutableStateOf<ImportNotice?>(null) }
     var pendingImport by remember { mutableStateOf<PendingImport?>(null) }
+
+    fun startPreview(uri: Uri, source: ImportSource) {
+        scope.launch {
+            isWorking = true
+            notice = null
+            runCatching {
+                when (source) {
+                    ImportSource.File -> onPreviewImport(uri)
+                    ImportSource.Folder -> onPreviewFolder(uri)
+                }
+            }.onSuccess { preview ->
+                pendingImport = PendingImport(uri, preview, source)
+            }.onFailure { error ->
+                notice = ImportNotice(error.message ?: "Не удалось проверить выбранный источник", true)
+            }
+            isWorking = false
+        }
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            isWorking = true
-            notice = null
-            runCatching { onPreviewImport(uri) }
-                .onSuccess { preview -> pendingImport = PendingImport(uri, preview) }
-                .onFailure { error ->
-                    notice = ImportNotice(error.message ?: "Не удалось проверить файл", true)
-                }
-            isWorking = false
-        }
+        if (uri != null) startPreview(uri, ImportSource.File)
+    }
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) startPreview(uri, ImportSource.Folder)
     }
 
     pendingImport?.let { pending ->
@@ -86,18 +107,21 @@ fun LibraryScreen(
             onConfirm = {
                 scope.launch {
                     isWorking = true
-                    runCatching { onImport(pending.uri) }
-                        .onSuccess { result ->
-                            val action = if (result.updatedExistingTitle) "обновлён" else "добавлен"
-                            notice = ImportNotice(
-                                "${result.title}: $action, глав — ${result.chaptersImported}",
-                                false,
-                            )
-                            pendingImport = null
+                    runCatching {
+                        when (pending.source) {
+                            ImportSource.File -> onImport(pending.uri)
+                            ImportSource.Folder -> onImportFolder(pending.uri)
                         }
-                        .onFailure { error ->
-                            notice = ImportNotice(error.message ?: "Не удалось импортировать файл", true)
-                        }
+                    }.onSuccess { result ->
+                        val action = if (result.updatedExistingTitle) "обновлён" else "добавлен"
+                        notice = ImportNotice(
+                            "${result.title}: $action, глав — ${result.chaptersImported}",
+                            false,
+                        )
+                        pendingImport = null
+                    }.onFailure { error ->
+                        notice = ImportNotice(error.message ?: "Не удалось импортировать источник", true)
+                    }
                     isWorking = false
                 }
             },
@@ -128,24 +152,45 @@ fun LibraryScreen(
                 Icon(Icons.Outlined.FilterList, contentDescription = "Фильтры")
             }
             Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = {
-                    filePicker.launch(
-                        arrayOf(
-                            "text/plain",
-                            "application/zip",
-                            "application/x-zip-compressed",
-                            "application/octet-stream",
-                        ),
+            Box {
+                Button(
+                    onClick = { addMenuExpanded = true },
+                    enabled = !isWorking,
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    if (isWorking && pendingImport == null) {
+                        CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Outlined.Add, contentDescription = "Добавить книгу")
+                    }
+                }
+                DropdownMenu(
+                    expanded = addMenuExpanded,
+                    onDismissRequest = { addMenuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Файл TXT или ZIP") },
+                        leadingIcon = { Icon(Icons.Outlined.Description, contentDescription = null) },
+                        onClick = {
+                            addMenuExpanded = false
+                            filePicker.launch(
+                                arrayOf(
+                                    "text/plain",
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/octet-stream",
+                                ),
+                            )
+                        },
                     )
-                },
-                enabled = !isWorking,
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                if (isWorking && pendingImport == null) {
-                    CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Outlined.Add, contentDescription = "Добавить TXT или ZIP")
+                    DropdownMenuItem(
+                        text = { Text("Папка с главами") },
+                        leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+                        onClick = {
+                            addMenuExpanded = false
+                            folderPicker.launch(null)
+                        },
+                    )
                 }
             }
         }
@@ -156,7 +201,7 @@ fun LibraryScreen(
 
         if (books.isEmpty()) {
             Text(
-                text = "Нажмите «Добавить», чтобы выбрать TXT или ZIP с главами",
+                text = "Нажмите «Добавить», чтобы выбрать файл или папку с TXT-главами",
                 modifier = Modifier.padding(top = 32.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -200,7 +245,7 @@ private fun ImportPreviewDialog(
                 )
                 if (preview.filesSkipped > 0) {
                     Text(
-                        "Пропущено файлов: ${preview.filesSkipped}",
+                        "Пропущено файлов и папок: ${preview.filesSkipped}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -281,5 +326,10 @@ private fun ImportNoticeCard(notice: ImportNotice, onDismiss: () -> Unit) {
     }
 }
 
-private data class PendingImport(val uri: Uri, val preview: ImportPreview)
+private enum class ImportSource { File, Folder }
+private data class PendingImport(
+    val uri: Uri,
+    val preview: ImportPreview,
+    val source: ImportSource,
+)
 private data class ImportNotice(val message: String, val isError: Boolean)

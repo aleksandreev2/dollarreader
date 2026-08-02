@@ -35,6 +35,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.LibraryRepository
+import com.dollarreader.app.data.importer.FolderBookImporter
 import com.dollarreader.app.data.importer.LocalBookImporter
 import com.dollarreader.app.data.importer.LocalBookPreviewer
 import com.dollarreader.app.data.local.DollarReaderDatabase
@@ -74,6 +75,7 @@ fun DollarReaderApp() {
     }
     val importer = remember(context, repository) { LocalBookImporter(context, repository) }
     val previewer = remember(context, repository) { LocalBookPreviewer(context, repository) }
+    val folderImporter = remember(context, repository) { FolderBookImporter(context, repository) }
     val books by repository.books.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
@@ -147,6 +149,8 @@ fun DollarReaderApp() {
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
                         onPreviewImport = previewer::previewBook,
                         onImport = importer::importBook,
+                        onPreviewFolder = folderImporter::previewFolder,
+                        onImportFolder = folderImporter::importFolder,
                     )
                 }
                 composable(Routes.Downloads) {
@@ -155,6 +159,8 @@ fun DollarReaderApp() {
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
                         onPreviewImport = previewer::previewBook,
                         onImport = importer::importBook,
+                        onPreviewFolder = folderImporter::previewFolder,
+                        onImportFolder = folderImporter::importFolder,
                     )
                 }
                 composable(Routes.Settings) {

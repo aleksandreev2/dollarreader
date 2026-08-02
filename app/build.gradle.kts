@@ -14,7 +14,7 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode = 4
-        versionName = "0.2.0-alpha03"
+        versionName = "0.2.0-alpha04"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.documentfile)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
