@@ -5,10 +5,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,15 +22,18 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.dollarreader.app.data.importer.ImportPreview
 import com.dollarreader.app.data.importer.ImportResult
 import com.dollarreader.app.model.Book
 import com.dollarreader.app.ui.components.BookRow
@@ -48,35 +54,54 @@ import kotlinx.coroutines.launch
 fun LibraryScreen(
     books: List<Book>,
     onBookClick: (Book) -> Unit,
+    onPreviewImport: suspend (Uri) -> ImportPreview,
     onImport: suspend (Uri) -> ImportResult,
 ) {
     val scope = rememberCoroutineScope()
-    var isImporting by rememberSaveable { mutableStateOf(false) }
+    var isWorking by rememberSaveable { mutableStateOf(false) }
     var notice by remember { mutableStateOf<ImportNotice?>(null) }
+    var pendingImport by remember { mutableStateOf<PendingImport?>(null) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            isImporting = true
+            isWorking = true
             notice = null
-            runCatching { onImport(uri) }
-                .onSuccess { result ->
-                    val action = if (result.updatedExistingTitle) "обновлён" else "добавлен"
-                    notice = ImportNotice(
-                        message = "${result.title}: $action, глав — ${result.chaptersImported}",
-                        isError = false,
-                    )
-                }
+            runCatching { onPreviewImport(uri) }
+                .onSuccess { preview -> pendingImport = PendingImport(uri, preview) }
                 .onFailure { error ->
-                    notice = ImportNotice(
-                        message = error.message ?: "Не удалось импортировать файл",
-                        isError = true,
-                    )
+                    notice = ImportNotice(error.message ?: "Не удалось проверить файл", true)
                 }
-            isImporting = false
+            isWorking = false
         }
+    }
+
+    pendingImport?.let { pending ->
+        ImportPreviewDialog(
+            preview = pending.preview,
+            isImporting = isWorking,
+            onDismiss = { if (!isWorking) pendingImport = null },
+            onConfirm = {
+                scope.launch {
+                    isWorking = true
+                    runCatching { onImport(pending.uri) }
+                        .onSuccess { result ->
+                            val action = if (result.updatedExistingTitle) "обновлён" else "добавлен"
+                            notice = ImportNotice(
+                                "${result.title}: $action, глав — ${result.chaptersImported}",
+                                false,
+                            )
+                            pendingImport = null
+                        }
+                        .onFailure { error ->
+                            notice = ImportNotice(error.message ?: "Не удалось импортировать файл", true)
+                        }
+                    isWorking = false
+                }
+            },
+        )
     }
 
     Column(
@@ -114,14 +139,11 @@ fun LibraryScreen(
                         ),
                     )
                 },
-                enabled = !isImporting,
+                enabled = !isWorking,
                 shape = RoundedCornerShape(16.dp),
             ) {
-                if (isImporting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.width(20.dp),
-                        strokeWidth = 2.dp,
-                    )
+                if (isWorking && pendingImport == null) {
+                    CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
                 } else {
                     Icon(Icons.Outlined.Add, contentDescription = "Добавить TXT или ZIP")
                 }
@@ -129,10 +151,7 @@ fun LibraryScreen(
         }
 
         notice?.let { currentNotice ->
-            ImportNoticeCard(
-                notice = currentNotice,
-                onDismiss = { notice = null },
-            )
+            ImportNoticeCard(currentNotice, onDismiss = { notice = null })
         }
 
         if (books.isEmpty()) {
@@ -144,7 +163,7 @@ fun LibraryScreen(
         } else {
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(bottom = 24.dp),
             ) {
                 items(books, key = { it.id }) { book ->
                     BookRow(book = book, onClick = { onBookClick(book) })
@@ -155,21 +174,92 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun ImportNoticeCard(
-    notice: ImportNotice,
+private fun ImportPreviewDialog(
+    preview: ImportPreview,
+    isImporting: Boolean,
     onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
 ) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(if (preview.updatedExistingTitle) "Обновление тайтла" else "Импорт тайтла")
+                Text(
+                    preview.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "${preview.format} · томов: ${preview.volumes.size} · глав: ${preview.totalChapters}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (preview.filesSkipped > 0) {
+                    Text(
+                        "Пропущено файлов: ${preview.filesSkipped}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (preview.updatedExistingTitle) {
+                    Text(
+                        "Существующий тайтл будет обновлён. Прогресс и прочитанные главы сохранятся.",
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    preview.volumes.forEach { volume ->
+                        item(key = "volume-${volume.name}") {
+                            Text(
+                                text = "${volume.name} · ${volume.chapters.size}",
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                            )
+                        }
+                        items(volume.chapters, key = { "${volume.name}-${it.sourcePath}" }) { chapter ->
+                            Text(
+                                text = chapter.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp, top = 3.dp, bottom = 3.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, enabled = !isImporting) {
+                if (isImporting) {
+                    CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (preview.updatedExistingTitle) "Обновить" else "Импортировать")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isImporting) { Text("Отмена") }
+        },
+    )
+}
+
+@Composable
+private fun ImportNoticeCard(notice: ImportNotice, onDismiss: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (notice.isError) {
-                MaterialTheme.colorScheme.errorContainer
-            } else {
-                MaterialTheme.colorScheme.secondaryContainer
-            },
+            containerColor = if (notice.isError) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.secondaryContainer,
         ),
     ) {
         Row(
@@ -183,11 +273,7 @@ private fun ImportNoticeCard(
                 contentDescription = null,
             )
             Spacer(Modifier.width(10.dp))
-            Text(
-                text = notice.message,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            Text(notice.message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             IconButton(onClick = onDismiss) {
                 Icon(Icons.Outlined.Close, contentDescription = "Закрыть сообщение")
             }
@@ -195,7 +281,5 @@ private fun ImportNoticeCard(
     }
 }
 
-private data class ImportNotice(
-    val message: String,
-    val isError: Boolean,
-)
+private data class PendingImport(val uri: Uri, val preview: ImportPreview)
+private data class ImportNotice(val message: String, val isError: Boolean)
