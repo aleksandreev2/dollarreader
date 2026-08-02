@@ -40,11 +40,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.dollarreader.app.data.LibraryBackupRestoreService
 import com.dollarreader.app.data.LibraryExportService
 import com.dollarreader.app.model.ReaderPreferences
 import com.dollarreader.app.ui.components.ReaderSettingsControls
+import com.dollarreader.app.ui.theme.AppAppearancePreferences
 import kotlinx.coroutines.launch
 
 @Composable
@@ -59,6 +61,13 @@ fun SettingsScreen(
     onStageRestore: suspend (Uri) -> LibraryBackupRestoreService.RestorePreview,
     onRestartForRestore: () -> Unit,
 ) {
+    val context = LocalContext.current.applicationContext
+    remember(context) {
+        AppAppearancePreferences.initialize(context, darkTheme)
+        Unit
+    }
+    val persistedDarkTheme by AppAppearancePreferences.darkTheme
+    val effectiveDarkTheme = persistedDarkTheme ?: darkTheme
     val scope = rememberCoroutineScope()
     var isWorking by rememberSaveable { mutableStateOf(false) }
     var operationMessage by remember { mutableStateOf<OperationMessage?>(null) }
@@ -233,12 +242,15 @@ fun SettingsScreen(
         item {
             SettingCard(
                 title = "Тёмная тема",
-                subtitle = "Переключает оформление всего приложения",
+                subtitle = "Переключает оформление всего приложения и сохраняется после перезапуска",
                 icon = { Icon(Icons.Outlined.DarkMode, contentDescription = null) },
                 control = {
                     Switch(
-                        checked = darkTheme,
-                        onCheckedChange = onDarkThemeChange,
+                        checked = effectiveDarkTheme,
+                        onCheckedChange = { enabled ->
+                            AppAppearancePreferences.setDarkTheme(context, enabled)
+                            onDarkThemeChange(enabled)
+                        },
                     )
                 },
             )
