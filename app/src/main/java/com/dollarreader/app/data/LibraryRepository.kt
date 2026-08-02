@@ -9,12 +9,15 @@ import com.dollarreader.app.data.local.ReadingProgressEntity
 import com.dollarreader.app.data.local.TitleEntity
 import com.dollarreader.app.data.local.TitleSummaryRow
 import com.dollarreader.app.data.local.TitleWithVolumes
+import com.dollarreader.app.data.local.UpdateHistoryEntity
 import com.dollarreader.app.data.local.VolumeEntity
 import com.dollarreader.app.model.Book
 import com.dollarreader.app.model.BookChapterContents
 import com.dollarreader.app.model.BookContents
 import com.dollarreader.app.model.BookVolumeContents
 import com.dollarreader.app.model.ReaderChapterContent
+import com.dollarreader.app.model.TitleHistoryItem
+import com.dollarreader.app.model.TitleManagement
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.floor
@@ -39,6 +42,36 @@ class LibraryRepository(
 
     fun observeTitle(titleId: String): Flow<TitleWithVolumes?> =
         dao.observeTitleWithVolumes(titleId)
+
+    fun observeTitleManagement(titleId: String): Flow<TitleManagement?> =
+        combine(
+            dao.observeTitleEntity(titleId),
+            dao.observeUpdateHistory(titleId),
+        ) { title, history ->
+            title?.let { entity ->
+                TitleManagement(
+                    id = entity.id,
+                    title = entity.title,
+                    author = entity.author,
+                    description = entity.description,
+                    format = entity.format,
+                    sourceType = entity.sourceType,
+                    sourceUri = entity.sourceUri,
+                    isFavorite = entity.isFavorite,
+                    createdAt = entity.createdAt,
+                    updatedAt = entity.updatedAt,
+                    history = history.map { event ->
+                        TitleHistoryItem(
+                            id = event.id,
+                            eventType = event.eventType,
+                            details = event.details,
+                            chapterCount = event.chapterCount,
+                            createdAt = event.createdAt,
+                        )
+                    },
+                )
+            }
+        }
 
     fun observeBookContents(titleId: String): Flow<BookContents?> =
         combine(
@@ -176,8 +209,8 @@ class LibraryRepository(
             dao.upsertTitle(
                 TitleEntity(
                     id = plan.id,
-                    title = plan.title,
-                    author = plan.author,
+                    title = existingTitle?.title ?: plan.title,
+                    author = existingTitle?.author ?: plan.author,
                     format = plan.format,
                     sourceType = "local",
                     sourceUri = plan.sourceUri,
@@ -249,8 +282,87 @@ class LibraryRepository(
                     )
                 }
             }
+
+            dao.insertUpdateHistory(
+                UpdateHistoryEntity(
+                    titleId = plan.id,
+                    eventType = if (existingTitle == null) HISTORY_IMPORT else HISTORY_UPDATE,
+                    details = if (existingTitle == null) {
+                        "Импортировано из ${plan.format}"
+                    } else {
+                        "Обновлён источник ${plan.format}"
+                    },
+                    chapterCount = chapterImports.size,
+                    createdAt = now,
+                ),
+            )
+            dao.trimUpdateHistory(plan.id, HISTORY_LIMIT)
             existingTitle != null
         }
+    }
+
+    suspend fun updateTitleMetadata(
+        titleId: String,
+        title: String,
+        author: String,
+        description: String?,
+    ): Boolean {
+        val normalizedTitle = title.trim()
+        require(normalizedTitle.isNotEmpty()) { "Название не может быть пустым" }
+        val normalizedAuthor = author.trim().ifBlank { "Не указан" }
+        val normalizedDescription = description?.trim()?.takeIf(String::isNotEmpty)
+
+        return database.withTransaction {
+            val existing = dao.titleById(titleId) ?: return@withTransaction false
+            if (
+                existing.title == normalizedTitle &&
+                existing.author == normalizedAuthor &&
+                existing.description == normalizedDescription
+            ) {
+                return@withTransaction false
+            }
+
+            val changedFields = buildList {
+                if (existing.title != normalizedTitle) add("название")
+                if (existing.author != normalizedAuthor) add("автор")
+                if (existing.description != normalizedDescription) add("описание")
+            }
+            val now = System.currentTimeMillis()
+            dao.updateTitleMetadata(
+                titleId = titleId,
+                title = normalizedTitle,
+                author = normalizedAuthor,
+                description = normalizedDescription,
+                updatedAt = now,
+            )
+            dao.insertUpdateHistory(
+                UpdateHistoryEntity(
+                    titleId = titleId,
+                    eventType = HISTORY_METADATA,
+                    details = "Изменены: ${changedFields.joinToString()}",
+                    chapterCount = dao.chapterCount(titleId),
+                    createdAt = now,
+                ),
+            )
+            dao.trimUpdateHistory(titleId, HISTORY_LIMIT)
+            true
+        }
+    }
+
+    suspend fun setFavorite(titleId: String, isFavorite: Boolean): Boolean {
+        val existing = dao.titleById(titleId) ?: return false
+        if (existing.isFavorite == isFavorite) return false
+        return dao.updateFavorite(titleId, isFavorite, System.currentTimeMillis()) > 0
+    }
+
+    suspend fun deleteTitle(titleId: String): Boolean {
+        val title = dao.titleById(titleId) ?: return false
+        val localPaths = dao.chaptersByTitle(titleId).mapNotNull { it.localUri }
+        val deleted = database.withTransaction {
+            dao.deleteTitleById(title.id) > 0
+        }
+        if (deleted) deleteInternalCopies(titleId, localPaths)
+        return deleted
     }
 
     suspend fun openChapter(titleId: String, sortOrder: Int) {
@@ -319,7 +431,11 @@ class LibraryRepository(
             val completedThrough = if (chapterProgress >= 1f) chapterNumber else chapterNumber - 1
             val completed = if (completedThrough > 0) dao.chaptersUpTo(titleId, completedThrough) else emptyList()
             val currentIsRead = previousCurrentState?.isRead == true || chapterProgress >= 1f
-            val currentStoredProgress = if (currentIsRead) 1f else maxOf(previousCurrentState?.progress ?: 0f, chapterProgress)
+            val currentStoredProgress = if (currentIsRead) {
+                1f
+            } else {
+                maxOf(previousCurrentState?.progress ?: 0f, chapterProgress)
+            }
             val states = completed.map { chapter ->
                 ChapterStateEntity(chapter.id, titleId, 1f, true, now)
             } + ChapterStateEntity(
@@ -334,17 +450,50 @@ class LibraryRepository(
         }
     }
 
+    private suspend fun deleteInternalCopies(titleId: String, paths: List<String>) {
+        withContext(Dispatchers.IO) {
+            val marker = "${File.separator}library${File.separator}$titleId${File.separator}chapters${File.separator}"
+            val chapterDirectories = linkedSetOf<File>()
+            paths.forEach { path ->
+                runCatching {
+                    val file = File(path)
+                    val canonical = file.canonicalPath
+                    if (canonical.contains(marker)) {
+                        chapterDirectories += file.parentFile
+                        if (file.isFile) file.delete()
+                    }
+                }
+            }
+            chapterDirectories.forEach { directory ->
+                runCatching {
+                    if (directory.name == "chapters" && directory.listFiles().isNullOrEmpty()) {
+                        directory.delete()
+                        directory.parentFile?.takeIf { it.listFiles().isNullOrEmpty() }?.delete()
+                    }
+                }
+            }
+        }
+    }
+
     private fun positiveAccentSeed(value: String): Int = value.hashCode().and(Int.MAX_VALUE) % 8
 
     private companion object {
         const val SORT_ORDER_SHIFT = 1_000_000
+        const val HISTORY_LIMIT = 30
+        const val HISTORY_IMPORT = "IMPORT"
+        const val HISTORY_UPDATE = "UPDATE"
+        const val HISTORY_METADATA = "METADATA"
     }
 }
 
 private fun TitleSummaryRow.toBook(): Book {
     val total = totalChapters.coerceAtLeast(0)
     val current = if (total == 0) 0 else currentChapter.coerceIn(1, total)
-    val totalProgress = if (total == 0) 0f else ((current - 1) + chapterProgress.coerceIn(0f, 1f)) / total
+    val totalProgress = if (total == 0) {
+        0f
+    } else {
+        ((current - 1) + chapterProgress.coerceIn(0f, 1f)) / total
+    }
     return Book(
         id = title.id,
         title = title.title,
