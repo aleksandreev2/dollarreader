@@ -45,8 +45,12 @@ private val previewParagraphs = listOf(
 )
 
 @Composable
-fun ReaderScreen(book: Book, onBack: () -> Unit) {
-    var progress by remember { mutableFloatStateOf(book.progress) }
+fun ReaderScreen(
+    book: Book,
+    onBack: () -> Unit,
+    onProgressChangeFinished: (Float) -> Unit,
+) {
+    var progress by remember(book.id) { mutableFloatStateOf(book.progress) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -108,17 +112,32 @@ fun ReaderScreen(book: Book, onBack: () -> Unit) {
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.TextFields, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        Icons.Outlined.TextFields,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                     Spacer(Modifier.weight(1f))
                     Text("A−", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.weight(1f))
-                    Text("A+", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        "A+",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
-                Slider(value = progress, onValueChange = { progress = it })
+                Slider(
+                    value = progress,
+                    onValueChange = { progress = it },
+                    onValueChangeFinished = { onProgressChangeFinished(progress) },
+                )
                 Row(Modifier.fillMaxWidth()) {
                     Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
-                    Text("${book.currentChapter} из ${book.totalChapters}", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "${book.currentChapter} из ${book.totalChapters}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                     Spacer(Modifier.weight(1f))
                     Text("09:30", style = MaterialTheme.typography.bodyMedium)
                 }

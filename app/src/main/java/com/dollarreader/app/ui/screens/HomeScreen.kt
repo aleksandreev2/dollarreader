@@ -34,12 +34,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.dollarreader.app.model.Book
-import com.dollarreader.app.model.sampleBooks
 import com.dollarreader.app.ui.components.BookRow
 
 @Composable
-fun HomeScreen(onBookClick: (Book) -> Unit) {
+fun HomeScreen(
+    books: List<Book>,
+    onBookClick: (Book) -> Unit,
+) {
     var query by remember { mutableStateOf("") }
+    val visibleBooks = remember(books, query) {
+        val normalized = query.trim().lowercase()
+        if (normalized.isBlank()) {
+            books
+        } else {
+            books.filter { book ->
+                book.title.lowercase().contains(normalized) ||
+                    book.author.lowercase().contains(normalized)
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.padding(horizontal = 18.dp),
@@ -64,8 +77,22 @@ fun HomeScreen(onBookClick: (Book) -> Unit) {
             )
         }
         item { SectionHeader("Продолжить чтение", "Все") }
-        items(sampleBooks) { book ->
-            BookRow(book = book, onClick = { onBookClick(book) })
+        if (visibleBooks.isEmpty()) {
+            item {
+                Text(
+                    text = if (books.isEmpty()) {
+                        "Библиотека пока пуста"
+                    } else {
+                        "По этому запросу ничего не найдено"
+                    },
+                    modifier = Modifier.padding(vertical = 28.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            items(visibleBooks, key = { it.id }) { book ->
+                BookRow(book = book, onClick = { onBookClick(book) })
+            }
         }
         item {
             Spacer(Modifier.height(6.dp))
@@ -74,10 +101,25 @@ fun HomeScreen(onBookClick: (Book) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                LibraryShortcut("Все книги", "128", Icons.Outlined.AutoStories, Modifier.weight(1f))
-                LibraryShortcut("Избранное", "27", Icons.Outlined.FavoriteBorder, Modifier.weight(1f))
-                LibraryShortcut("Загрузки", "16", Icons.Outlined.Download, Modifier.weight(1f))
-                LibraryShortcut("Недавние", "12", Icons.Outlined.AccessTime, Modifier.weight(1f))
+                LibraryShortcut("Все книги", books.size.toString(), Icons.Outlined.AutoStories, Modifier.weight(1f))
+                LibraryShortcut(
+                    "Избранное",
+                    books.count { it.isFavorite }.toString(),
+                    Icons.Outlined.FavoriteBorder,
+                    Modifier.weight(1f),
+                )
+                LibraryShortcut(
+                    "Загрузки",
+                    books.count { it.totalChapters > 0 }.toString(),
+                    Icons.Outlined.Download,
+                    Modifier.weight(1f),
+                )
+                LibraryShortcut(
+                    "Недавние",
+                    books.count { it.lastOpenedAt != null }.toString(),
+                    Icons.Outlined.AccessTime,
+                    Modifier.weight(1f),
+                )
             }
         }
         item { Spacer(Modifier.height(28.dp)) }
@@ -128,7 +170,11 @@ private fun LibraryShortcut(
             )
             Spacer(Modifier.height(8.dp))
             Text(text = title, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-            Text(text = count, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = count,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

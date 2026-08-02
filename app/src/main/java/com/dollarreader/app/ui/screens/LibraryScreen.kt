@@ -24,11 +24,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.dollarreader.app.model.Book
-import com.dollarreader.app.model.sampleBooks
 import com.dollarreader.app.ui.components.BookRow
 
 @Composable
-fun LibraryScreen(onBookClick: (Book) -> Unit) {
+fun LibraryScreen(
+    books: List<Book>,
+    onBookClick: (Book) -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -43,23 +45,31 @@ fun LibraryScreen(onBookClick: (Book) -> Unit) {
             Column {
                 Text("Библиотека", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Книги, тайтлы и документы",
+                    "${books.size} тайтлов и документов",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.weight(1f))
             OutlinedButton(onClick = { }, shape = RoundedCornerShape(16.dp)) {
-                Icon(Icons.Outlined.FilterList, contentDescription = null)
+                Icon(Icons.Outlined.FilterList, contentDescription = "Фильтры")
             }
             Spacer(Modifier.width(8.dp))
             Button(onClick = { }, shape = RoundedCornerShape(16.dp)) {
-                Icon(Icons.Outlined.Add, contentDescription = null)
+                Icon(Icons.Outlined.Add, contentDescription = "Добавить")
             }
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(sampleBooks) { book ->
-                BookRow(book = book, onClick = { onBookClick(book) })
+        if (books.isEmpty()) {
+            Text(
+                text = "Добавленные книги появятся здесь",
+                modifier = Modifier.padding(top = 32.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(books, key = { it.id }) { book ->
+                    BookRow(book = book, onClick = { onBookClick(book) })
+                }
             }
         }
     }
