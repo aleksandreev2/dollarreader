@@ -36,13 +36,18 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.AnnotationRepository
+import com.dollarreader.app.data.ChapterContentLoader
 import com.dollarreader.app.data.ChapterNavigationRepository
+import com.dollarreader.app.data.LibraryExportService
 import com.dollarreader.app.data.LibraryRepository
+import com.dollarreader.app.data.LocalTitleDeletionService
 import com.dollarreader.app.data.ReaderSettingsRepository
+import com.dollarreader.app.data.importer.BookFileImportCoordinator
 import com.dollarreader.app.data.importer.FolderBookImporter
 import com.dollarreader.app.data.importer.ImportPreview
 import com.dollarreader.app.data.importer.ImportResult
 import com.dollarreader.app.data.importer.LocalBookService
+import com.dollarreader.app.data.importer.StructuredBookService
 import com.dollarreader.app.data.local.DollarReaderDatabase
 import com.dollarreader.app.model.ChapterReadingPosition
 import com.dollarreader.app.model.ReaderChapterContent
@@ -52,6 +57,7 @@ import com.dollarreader.app.ui.screens.BookDetailsScreen
 import com.dollarreader.app.ui.screens.HomeScreen
 import com.dollarreader.app.ui.screens.LibraryScreen
 import com.dollarreader.app.ui.screens.ReaderScreen
+import com.dollarreader.app.ui.screens.RichReaderScreen
 import com.dollarreader.app.ui.screens.SavedLibraryScreen
 import com.dollarreader.app.ui.screens.SettingsScreen
 import com.dollarreader.app.ui.screens.WelcomeScreen
@@ -92,14 +98,34 @@ fun DollarReaderApp() {
     val chapterNavigationRepository = remember(database) {
         ChapterNavigationRepository(database)
     }
+    val chapterContentLoader = remember(database) {
+        ChapterContentLoader(database)
+    }
     val annotationRepository = remember(database) {
         AnnotationRepository(database)
     }
     val localBookService = remember(context, repository) {
         LocalBookService(context, repository)
     }
+    val structuredBookService = remember(context, repository) {
+        StructuredBookService(context, repository)
+    }
+    val bookFileImportCoordinator = remember(localBookService, structuredBookService) {
+        BookFileImportCoordinator(localBookService, structuredBookService)
+    }
     val folderImporter = remember(context, repository) {
         FolderBookImporter(context, repository)
+    }
+    val titleDeletionService = remember(context, repository) {
+        LocalTitleDeletionService(context, repository)
+    }
+    val libraryExportService = remember(context, database, repository, annotationRepository) {
+        LibraryExportService(
+            context = context,
+            database = database,
+            repository = repository,
+            annotationRepository = annotationRepository,
+        )
     }
     val books by repository.books.collectAsState(initial = emptyList())
     val savedItems by annotationRepository.savedItems.collectAsState(initial = emptyList())
@@ -180,8 +206,8 @@ fun DollarReaderApp() {
                         onBookClick = { book ->
                             navController.navigate(Routes.book(book.id))
                         },
-                        onPreviewImport = localBookService::previewBook,
-                        onImport = localBookService::importBook,
+                        onPreviewImport = bookFileImportCoordinator::previewBook,
+                        onImport = bookFileImportCoordinator::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
                         onImportFolder = folderImporter::importFolder,
                     )
@@ -238,6 +264,8 @@ fun DollarReaderApp() {
                                 readerSettingsRepository.savePreferences(preferences)
                             }
                         },
+                        onExportNotes = libraryExportService::exportNotes,
+                        onCreateBackup = libraryExportService::createBackup,
                     )
                 }
                 composable(
@@ -266,10 +294,13 @@ fun DollarReaderApp() {
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
                                     "ZIP/TXT" -> suspend {
-                                        localBookService.previewBook(uri)
+                                        bookFileImportCoordinator.previewBook(uri)
                                     }
                                     "ПАПКА/TXT" -> suspend {
                                         folderImporter.previewFolder(uri)
+                                    }
+                                    "EPUB", "HTML" -> suspend {
+                                        bookFileImportCoordinator.previewBook(uri)
                                     }
                                     else -> null
                                 }
@@ -278,10 +309,13 @@ fun DollarReaderApp() {
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
                                     "ZIP/TXT" -> suspend {
-                                        localBookService.importBook(uri)
+                                        bookFileImportCoordinator.importBook(uri)
                                     }
                                     "ПАПКА/TXT" -> suspend {
                                         folderImporter.importFolder(uri)
+                                    }
+                                    "EPUB", "HTML" -> suspend {
+                                        bookFileImportCoordinator.importBook(uri)
                                     }
                                     else -> null
                                 }
@@ -313,7 +347,7 @@ fun DollarReaderApp() {
                                 repository.setFavorite(book.id, isFavorite)
                             },
                             onDelete = {
-                                check(repository.deleteTitle(book.id)) {
+                                check(titleDeletionService.deleteTitle(book.id)) {
                                     "Тайтл уже удалён или недоступен"
                                 }
                                 navController.popBackStack()
@@ -341,7 +375,7 @@ fun DollarReaderApp() {
                             key1 = book.id,
                             key2 = book.currentChapter,
                         ) {
-                            value = repository.loadChapter(
+                            value = chapterContentLoader.loadChapter(
                                 book.id,
                                 book.currentChapter,
                             )
@@ -363,100 +397,120 @@ fun DollarReaderApp() {
                                 .collect { value = it }
                         }
 
-                        ReaderScreen(
-                            book = book,
-                            chapter = chapter,
-                            preferences = readerPreferences,
-                            initialPosition = initialPosition,
-                            annotations = annotations,
-                            canGoPrevious = book.currentChapter > 1,
-                            canGoNext = book.currentChapter < book.totalChapters,
-                            onBack = { navController.popBackStack() },
-                            onPreferencesChange = { preferences ->
+                        val savePosition: (ChapterReadingPosition) -> Unit = { position ->
+                            val chapterNumber = chapter?.sortOrder ?: book.currentChapter
+                            scope.launch {
+                                readerSettingsRepository.savePosition(
+                                    titleId = book.id,
+                                    chapterNumber = chapterNumber,
+                                    position = position,
+                                )
+                            }
+                        }
+                        val previousChapter: (ChapterReadingPosition?) -> Unit = { position ->
+                            val currentChapter = chapter
+                            if (currentChapter != null) {
                                 scope.launch {
-                                    readerSettingsRepository.savePreferences(preferences)
-                                }
-                            },
-                            onPositionChange = { position ->
-                                val chapterNumber = chapter?.sortOrder
-                                    ?: book.currentChapter
-                                scope.launch {
-                                    readerSettingsRepository.savePosition(
+                                    position?.let {
+                                        readerSettingsRepository.savePosition(
+                                            titleId = book.id,
+                                            chapterNumber = currentChapter.sortOrder,
+                                            position = it,
+                                        )
+                                    }
+                                    chapterNavigationRepository.moveToAdjacentChapter(
                                         titleId = book.id,
-                                        chapterNumber = chapterNumber,
-                                        position = position,
+                                        currentChapterId = currentChapter.id,
+                                        forward = false,
                                     )
                                 }
-                            },
-                            onPreviousChapter = { position ->
-                                val currentChapter = chapter
-                                if (currentChapter != null) {
-                                    scope.launch {
-                                        position?.let {
-                                            readerSettingsRepository.savePosition(
-                                                titleId = book.id,
-                                                chapterNumber = currentChapter.sortOrder,
-                                                position = it,
-                                            )
-                                        }
-                                        chapterNavigationRepository.moveToAdjacentChapter(
-                                            titleId = book.id,
-                                            currentChapterId = currentChapter.id,
-                                            forward = false,
-                                        )
-                                    }
-                                }
-                            },
-                            onNextChapter = { position ->
-                                val currentChapter = chapter
-                                if (currentChapter != null) {
-                                    scope.launch {
-                                        position?.let {
-                                            readerSettingsRepository.savePosition(
-                                                titleId = book.id,
-                                                chapterNumber = currentChapter.sortOrder,
-                                                position = it,
-                                            )
-                                        }
-                                        chapterNavigationRepository.moveToAdjacentChapter(
-                                            titleId = book.id,
-                                            currentChapterId = currentChapter.id,
-                                            forward = true,
-                                        )
-                                    }
-                                }
-                            },
-                            onAddHighlight = { selection ->
-                                val currentChapter = chapter
-                                if (currentChapter != null) {
-                                    scope.launch {
-                                        annotationRepository.addHighlight(
-                                            titleId = book.id,
-                                            chapterId = currentChapter.id,
-                                            selection = selection,
-                                        )
-                                    }
-                                }
-                            },
-                            onAddNote = { selection, note ->
-                                val currentChapter = chapter
-                                if (currentChapter != null) {
-                                    scope.launch {
-                                        annotationRepository.addNote(
-                                            titleId = book.id,
-                                            chapterId = currentChapter.id,
-                                            selection = selection,
-                                            noteText = note,
-                                        )
-                                    }
-                                }
-                            },
-                            onDeleteAnnotation = { annotationId ->
+                            }
+                        }
+                        val nextChapter: (ChapterReadingPosition?) -> Unit = { position ->
+                            val currentChapter = chapter
+                            if (currentChapter != null) {
                                 scope.launch {
-                                    annotationRepository.deleteAnnotation(annotationId)
+                                    position?.let {
+                                        readerSettingsRepository.savePosition(
+                                            titleId = book.id,
+                                            chapterNumber = currentChapter.sortOrder,
+                                            position = it,
+                                        )
+                                    }
+                                    chapterNavigationRepository.moveToAdjacentChapter(
+                                        titleId = book.id,
+                                        currentChapterId = currentChapter.id,
+                                        forward = true,
+                                    )
                                 }
-                            },
-                        )
+                            }
+                        }
+                        val updatePreferences: (ReaderPreferences) -> Unit = { preferences ->
+                            scope.launch {
+                                readerSettingsRepository.savePreferences(preferences)
+                            }
+                        }
+
+                        if (book.format == "EPUB" || book.format == "HTML") {
+                            RichReaderScreen(
+                                book = book,
+                                chapter = chapter,
+                                preferences = readerPreferences,
+                                initialPosition = initialPosition,
+                                canGoPrevious = book.currentChapter > 1,
+                                canGoNext = book.currentChapter < book.totalChapters,
+                                onBack = { navController.popBackStack() },
+                                onPreferencesChange = updatePreferences,
+                                onPositionChange = savePosition,
+                                onPreviousChapter = previousChapter,
+                                onNextChapter = nextChapter,
+                            )
+                        } else {
+                            ReaderScreen(
+                                book = book,
+                                chapter = chapter,
+                                preferences = readerPreferences,
+                                initialPosition = initialPosition,
+                                annotations = annotations,
+                                canGoPrevious = book.currentChapter > 1,
+                                canGoNext = book.currentChapter < book.totalChapters,
+                                onBack = { navController.popBackStack() },
+                                onPreferencesChange = updatePreferences,
+                                onPositionChange = savePosition,
+                                onPreviousChapter = previousChapter,
+                                onNextChapter = nextChapter,
+                                onAddHighlight = { selection ->
+                                    val currentChapter = chapter
+                                    if (currentChapter != null) {
+                                        scope.launch {
+                                            annotationRepository.addHighlight(
+                                                titleId = book.id,
+                                                chapterId = currentChapter.id,
+                                                selection = selection,
+                                            )
+                                        }
+                                    }
+                                },
+                                onAddNote = { selection, note ->
+                                    val currentChapter = chapter
+                                    if (currentChapter != null) {
+                                        scope.launch {
+                                            annotationRepository.addNote(
+                                                titleId = book.id,
+                                                chapterId = currentChapter.id,
+                                                selection = selection,
+                                                noteText = note,
+                                            )
+                                        }
+                                    }
+                                },
+                                onDeleteAnnotation = { annotationId ->
+                                    scope.launch {
+                                        annotationRepository.deleteAnnotation(annotationId)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
