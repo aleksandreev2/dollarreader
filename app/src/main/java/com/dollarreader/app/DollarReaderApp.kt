@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoStories
-import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +52,7 @@ import com.dollarreader.app.ui.screens.BookDetailsScreen
 import com.dollarreader.app.ui.screens.HomeScreen
 import com.dollarreader.app.ui.screens.LibraryScreen
 import com.dollarreader.app.ui.screens.ReaderScreen
+import com.dollarreader.app.ui.screens.SavedLibraryScreen
 import com.dollarreader.app.ui.screens.SettingsScreen
 import com.dollarreader.app.ui.screens.WelcomeScreen
 import com.dollarreader.app.ui.theme.DollarReaderTheme
@@ -62,7 +63,7 @@ private object Routes {
     const val Welcome = "welcome"
     const val Home = "home"
     const val Library = "library"
-    const val Downloads = "downloads"
+    const val Saved = "saved"
     const val Settings = "settings"
     const val Book = "book"
     const val Reader = "reader"
@@ -101,6 +102,7 @@ fun DollarReaderApp() {
         FolderBookImporter(context, repository)
     }
     val books by repository.books.collectAsState(initial = emptyList())
+    val savedItems by annotationRepository.savedItems.collectAsState(initial = emptyList())
     val readerPreferences by readerSettingsRepository.preferences.collectAsState(
         initial = ReaderPreferences.Default,
     )
@@ -116,7 +118,7 @@ fun DollarReaderApp() {
     val showBottomBar = currentRoute in setOf(
         Routes.Home,
         Routes.Library,
-        Routes.Downloads,
+        Routes.Saved,
         Routes.Settings,
     )
 
@@ -129,7 +131,7 @@ fun DollarReaderApp() {
                         val items = listOf(
                             Triple(Routes.Home, "Главная", Icons.Outlined.Home),
                             Triple(Routes.Library, "Библиотека", Icons.Outlined.AutoStories),
-                            Triple(Routes.Downloads, "Загрузки", Icons.Outlined.Download),
+                            Triple(Routes.Saved, "Метки", Icons.Outlined.Bookmarks),
                             Triple(Routes.Settings, "Настройки", Icons.Outlined.Settings),
                         )
                         items.forEach { (route, label, icon) ->
@@ -184,16 +186,46 @@ fun DollarReaderApp() {
                         onImportFolder = folderImporter::importFolder,
                     )
                 }
-                composable(Routes.Downloads) {
-                    LibraryScreen(
-                        books = books.filter { it.totalChapters > 0 },
-                        onBookClick = { book ->
-                            navController.navigate(Routes.book(book.id))
+                composable(Routes.Saved) {
+                    SavedLibraryScreen(
+                        books = books,
+                        savedItems = savedItems,
+                        onSearch = annotationRepository::searchLibrary,
+                        onOpenSaved = { item ->
+                            scope.launch {
+                                readerSettingsRepository.openSavedLocation(
+                                    titleId = item.titleId,
+                                    chapterId = item.chapterId,
+                                    chapterNumber = item.chapterSortOrder,
+                                    paragraphIndex = item.paragraphIndex,
+                                    showChapterTitle = readerPreferences.showChapterTitle,
+                                )
+                                navController.navigate(Routes.reader(item.titleId))
+                            }
                         },
-                        onPreviewImport = localBookService::previewBook,
-                        onImport = localBookService::importBook,
-                        onPreviewFolder = folderImporter::previewFolder,
-                        onImportFolder = folderImporter::importFolder,
+                        onOpenFavorite = { book ->
+                            scope.launch {
+                                repository.openChapter(book.id, book.currentChapter)
+                                navController.navigate(Routes.reader(book.id))
+                            }
+                        },
+                        onOpenSearchResult = { result ->
+                            scope.launch {
+                                readerSettingsRepository.openSavedLocation(
+                                    titleId = result.titleId,
+                                    chapterId = result.chapterId,
+                                    chapterNumber = result.chapterSortOrder,
+                                    paragraphIndex = result.paragraphIndex,
+                                    showChapterTitle = readerPreferences.showChapterTitle,
+                                )
+                                navController.navigate(Routes.reader(result.titleId))
+                            }
+                        },
+                        onDeleteSaved = { annotationId ->
+                            scope.launch {
+                                annotationRepository.deleteAnnotation(annotationId)
+                            }
+                        },
                     )
                 }
                 composable(Routes.Settings) {
