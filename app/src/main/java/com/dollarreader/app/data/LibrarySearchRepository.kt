@@ -1,5 +1,6 @@
 package com.dollarreader.app.data
 
+import android.text.Html
 import androidx.room.withTransaction
 import com.dollarreader.app.data.local.ChapterSearchIndexEntity
 import com.dollarreader.app.data.local.DollarReaderDatabase
@@ -76,11 +77,12 @@ class LibrarySearchRepository(
                         previous.chapterSortOrder == chapter.chapterSortOrder
                     if (unchanged) return@forEach
 
-                    val text = runCatching { file.readText(Charsets.UTF_8) }
+                    val source = runCatching { file.readText(Charsets.UTF_8) }
                         .getOrElse {
                             dao.deleteSearchDocumentsForChapter(chapter.chapterId)
                             return@forEach
                         }
+                    val text = source.toSearchableText(file.extension)
                     val now = System.currentTimeMillis()
                     val documents = text.toReaderParagraphs(chapter.chapterName)
                         .mapIndexed { paragraphIndex, paragraph ->
@@ -154,6 +156,14 @@ class LibrarySearchRepository(
                 "\"$escaped\"*"
             }
 
+    private fun String.toSearchableText(extension: String): String {
+        val looksLikeHtml = extension.lowercase(Locale.ROOT) in HTML_EXTENSIONS ||
+            contains("<html", ignoreCase = true) || contains("<body", ignoreCase = true)
+        if (!looksLikeHtml) return this
+        return Html.fromHtml(this, Html.FROM_HTML_MODE_LEGACY).toString()
+            .replace('\u00A0', ' ')
+    }
+
     private fun String.toReaderParagraphs(chapterTitle: String): List<String> {
         val paragraphs = trim()
             .split(Regex("""\n[\t ]*\n+"""))
@@ -197,6 +207,7 @@ class LibrarySearchRepository(
     )
 
     private companion object {
+        val HTML_EXTENSIONS = setOf("html", "htm", "xhtml")
         const val SEARCH_RESULT_LIMIT = 120
         const val MIN_TOKEN_LENGTH = 2
         const val MAX_QUERY_TOKENS = 8
