@@ -156,7 +156,7 @@ fun ReaderScreen(
 
 private fun String.toReaderParagraphs(chapterTitle: String): List<String> {
     val paragraphs = trim()
-        .split(Regex("\n[\t ]*\n+"))
+        .split(Regex("""\n[\t ]*\n+"""))
         .map { paragraph -> paragraph.trim() }
         .filter(String::isNotBlank)
         .toMutableList()
@@ -176,5 +176,5 @@ private fun isHeadingDuplicate(firstParagraph: String, chapterTitle: String): Bo
 
 private fun normalizeHeading(value: String): String =
     value.lowercase(Locale.ROOT)
-        .replace(Regex("[^\p{L}\p{N}]+"), " ")
+        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
         .trim()

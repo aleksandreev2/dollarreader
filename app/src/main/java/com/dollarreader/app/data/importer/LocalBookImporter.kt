@@ -376,10 +376,10 @@ class LocalBookImporter(
     private fun cleanBookTitle(raw: String): String {
         val cleaned = raw
             .replace('_', ' ')
-            .replace(Regex("(?i)\s*дополнительн(?:ый|ого)\s+аудит.*$"), "")
-            .replace(Regex("(?i)\s*additional\s+audit.*$"), "")
-            .replace(Regex("\s*\(\d+\)\s*$"), "")
-            .replace(Regex("\s+"), " ")
+            .replace(Regex("""(?i)\s*дополнительн(?:ый|ого)\s+аудит.*$"""), "")
+            .replace(Regex("""(?i)\s*additional\s+audit.*$"""), "")
+            .replace(Regex("""\s*\(\d+\)\s*$"""), "")
+            .replace(Regex("""\s+"""), " ")
             .trim(' ', '-', '—', '_')
         return cleaned.ifBlank { "Новая книга" }
     }
@@ -430,7 +430,7 @@ class LocalBookImporter(
     private fun normalizeKey(value: String): String =
         value.lowercase(Locale.ROOT)
             .replace('_', ' ')
-            .replace(Regex("[^\p{L}\p{N}]+"), " ")
+            .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
             .trim()
 
     private fun stableId(namespace: String, value: String): String =
@@ -459,10 +459,10 @@ class LocalBookImporter(
         const val MAX_ZIP_ENTRIES = 10_000
         const val MAX_SINGLE_CHAPTER_BYTES = 8L * 1024L * 1024L
         const val MAX_TOTAL_IMPORT_BYTES = 192L * 1024L * 1024L
-        val CHAPTER_NUMBER = Regex("(?i)(?:глава|chapter|chap|ch)[ _.-]*(\d+)")
-        val VOLUME_PATTERN = Regex("(?i)(?:том|volume|vol)[ _.-]*\d+")
-        val VOLUME_NUMBER = Regex("(\d+)")
-        val NATURAL_NUMBER = Regex("\d+")
-        val WORD_PATTERN = Regex("[\p{L}\p{N}]+")
+        val CHAPTER_NUMBER = Regex("""(?i)(?:глава|chapter|chap|ch)[ _.-]*(\d+)""")
+        val VOLUME_PATTERN = Regex("""(?i)(?:том|volume|vol)[ _.-]*\d+""")
+        val VOLUME_NUMBER = Regex("""(\d+)""")
+        val NATURAL_NUMBER = Regex("""\d+""")
+        val WORD_PATTERN = Regex("""[\p{L}\p{N}]+""")
     }
 }
