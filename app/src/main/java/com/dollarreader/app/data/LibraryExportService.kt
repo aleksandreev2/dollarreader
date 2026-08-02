@@ -49,6 +49,7 @@ class LibraryExportService(
                 put("titles", books.size)
                 put("savedItems", saved.size)
                 put("databaseName", DATABASE_NAME)
+                put("databaseVersion", DATABASE_VERSION)
             }.toString(2).toByteArray(Charsets.UTF_8)
             zip.putNextEntry(ZipEntry("backup-info.json"))
             zip.write(metadata)
@@ -96,11 +97,9 @@ class LibraryExportService(
     }
 
     private fun checkpointDatabase() {
-        runCatching {
-            database.openHelper.writableDatabase
-                .query("PRAGMA wal_checkpoint(FULL)")
-                .use { cursor -> while (cursor.moveToNext()) Unit }
-        }
+        database.openHelper.writableDatabase
+            .query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .use { cursor -> while (cursor.moveToNext()) Unit }
     }
 
     private fun zipFile(
@@ -183,6 +182,7 @@ class LibraryExportService(
 
     private companion object {
         const val DATABASE_NAME = "dollarreader.db"
+        const val DATABASE_VERSION = 5
         const val BACKUP_FORMAT = "DollarReader portable backup v1"
     }
 }

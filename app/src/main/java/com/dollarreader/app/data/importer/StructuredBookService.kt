@@ -10,6 +10,9 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
@@ -25,48 +28,66 @@ class StructuredBookService(
     suspend fun previewBook(uri: Uri): ImportPreview = withContext(Dispatchers.IO) {
         persistReadPermission(uri)
         val parsed = parse(uri)
-        val existing = existingChapterHashes(parsed.titleId)
-        val changes = parsed.changeSummary(existing)
+        val existing = loadExistingChapters(parsed.titleId)
+        val volumes = parsed.groupedVolumes()
+        val planned = volumes.flatMap { volume ->
+            volume.chapters.map { chapter -> chapter.toDiffChapter(volume.id) }
+        }
+        val diff = calculateImportDiff(existing, planned)
+
         ImportPreview(
             titleId = parsed.titleId,
             title = parsed.title,
             format = parsed.format,
-            totalChapters = parsed.chapters.size,
+            totalChapters = planned.size,
             filesSkipped = parsed.filesSkipped,
             updatedExistingTitle = existing.isNotEmpty(),
-            volumes = listOf(
+            volumes = volumes.map { volume ->
                 ImportPreviewVolume(
-                    name = parsed.volumeName,
-                    chapters = parsed.chapters.map { chapter ->
+                    name = volume.name,
+                    chapters = volume.chapters.map { chapter ->
                         ImportPreviewChapter(
                             name = chapter.title,
                             number = chapter.number,
                             sourcePath = chapter.relativePath,
-                            change = when {
-                                chapter.id !in existing -> ImportChapterChange.ADDED
-                                existing[chapter.id] != chapter.contentHash -> ImportChapterChange.CHANGED
-                                else -> ImportChapterChange.UNCHANGED
-                            },
+                            change = diff.entries.getValue(chapter.id).change,
                         )
                     },
-                ),
-            ),
-            changes = changes,
+                )
+            },
+            changes = diff.summary,
         )
     }
 
     suspend fun importBook(uri: Uri): ImportResult = withContext(Dispatchers.IO) {
         persistReadPermission(uri)
         val parsed = parse(uri)
-        val existing = existingChapterHashes(parsed.titleId)
-        val changes = parsed.changeSummary(existing)
+        val existing = loadExistingChapters(parsed.titleId)
+        val groupedVolumes = parsed.groupedVolumes()
+        val planned = groupedVolumes.flatMap { volume ->
+            volume.chapters.map { chapter -> chapter.toDiffChapter(volume.id) }
+        }
+        val diff = calculateImportDiff(existing, planned)
+
+        if (!diff.summary.hasChanges && existing.isNotEmpty()) {
+            return@withContext ImportResult(
+                titleId = parsed.titleId,
+                title = parsed.title,
+                chaptersImported = planned.size,
+                filesSkipped = parsed.filesSkipped,
+                format = parsed.format,
+                updatedExistingTitle = true,
+                changes = diff.summary,
+            )
+        }
+
         val titleRoot = File(context.filesDir, "library/${parsed.titleId}")
         val finalRoot = File(titleRoot, "structured")
         val stagingRoot = File(titleRoot, "structured.tmp-${System.currentTimeMillis()}")
         val backupRoot = File(titleRoot, "structured.backup-${System.currentTimeMillis()}")
-
-        runCatching { stagingRoot.deleteRecursively() }
+        stagingRoot.deleteRecursively()
         stagingRoot.mkdirs()
+
         try {
             parsed.files.forEach { (relativePath, bytes) ->
                 val target = safeChild(stagingRoot, relativePath)
@@ -82,32 +103,34 @@ class StructuredBookService(
                 throw ImportException("Не удалось сохранить подготовленную книгу")
             }
 
-            val volumeId = stableId(parsed.titleId, "volume:${parsed.volumeName}")
             val plan = LocalTitleImport(
                 id = parsed.titleId,
                 title = parsed.title,
                 author = parsed.author,
                 format = parsed.format,
                 sourceUri = uri.toString(),
-                volumes = listOf(
+                volumes = groupedVolumes.map { volume ->
                     LocalVolumeImport(
-                        id = volumeId,
-                        name = parsed.volumeName,
-                        number = "1",
-                        sortOrder = 1,
-                        chapters = parsed.chapters.mapIndexed { index, chapter ->
+                        id = volume.id,
+                        name = volume.name,
+                        number = volume.number,
+                        sortOrder = volume.sortOrder,
+                        chapters = volume.chapters.map { chapter ->
                             LocalChapterImport(
                                 id = chapter.id,
                                 name = chapter.title,
                                 number = chapter.number,
-                                sortOrder = index + 1,
+                                sortOrder = chapter.sortOrder,
                                 localPath = safeChild(finalRoot, chapter.relativePath).absolutePath,
                                 contentHash = chapter.contentHash,
                                 wordCount = chapter.wordCount,
                             )
                         },
-                    ),
-                ),
+                    )
+                },
+                coverPath = parsed.coverRelativePath?.let { path ->
+                    safeChild(finalRoot, path).absolutePath
+                },
             )
             val updated = repository.importLocalTitle(plan)
             backupRoot.deleteRecursively()
@@ -115,11 +138,11 @@ class StructuredBookService(
             ImportResult(
                 titleId = parsed.titleId,
                 title = parsed.title,
-                chaptersImported = parsed.chapters.size,
+                chaptersImported = planned.size,
                 filesSkipped = parsed.filesSkipped,
                 format = parsed.format,
                 updatedExistingTitle = updated,
-                changes = changes,
+                changes = diff.summary,
             )
         } catch (error: Throwable) {
             stagingRoot.deleteRecursively()
@@ -151,18 +174,16 @@ class StructuredBookService(
     private fun parseEpub(uri: Uri, displayName: String): ParsedStructuredBook {
         val entries = readZipEntries(uri)
         val container = entries["META-INF/container.xml"]
-            ?.toString(StandardCharsets.UTF_8)
+            ?.let(::decodeStructuredText)
             ?: throw ImportException("В EPUB отсутствует META-INF/container.xml")
         val opfPath = ROOTFILE_PATH.find(container)?.groupValues?.get(1)
             ?.let(::normalizeZipPath)
             ?: throw ImportException("Не удалось найти пакет EPUB")
-        val opf = entries[opfPath]?.toString(StandardCharsets.UTF_8)
+        val opf = entries[opfPath]?.let(::decodeStructuredText)
             ?: throw ImportException("В EPUB отсутствует файл пакета $opfPath")
-        val opfDirectory = opfPath.substringBeforeLast('/', "")
 
         val title = decodeHtml(
-            metadataValue(opf, "title")
-                ?: displayName.substringBeforeLast('.'),
+            metadataValue(opf, "title") ?: displayName.substringBeforeLast('.'),
         ).ifBlank { "Книга EPUB" }
         val author = decodeHtml(metadataValue(opf, "creator").orEmpty())
             .ifBlank { "Не указан" }
@@ -176,8 +197,18 @@ class StructuredBookService(
                 id = id,
                 path = resolveZipPath(opfPath, href),
                 mediaType = attributes["media-type"].orEmpty().lowercase(Locale.ROOT),
+                properties = attributes["properties"].orEmpty()
+                    .lowercase(Locale.ROOT)
+                    .split(Regex("""\s+"""))
+                    .filter(String::isNotBlank)
+                    .toSet(),
             )
-        }.associateBy { it.id }
+        }.associateBy(ManifestItem::id)
+
+        val spineAttributes = SPINE_TAG.find(opf)
+            ?.groupValues?.get(1)
+            ?.let(::parseAttributes)
+            .orEmpty()
         val spineIds = ITEMREF_TAG.findAll(opf)
             .mapNotNull { parseAttributes(it.groupValues[1])["idref"] }
             .toList()
@@ -185,12 +216,34 @@ class StructuredBookService(
             spineIds.mapNotNull(manifest::get)
         } else {
             manifest.values.filter { it.mediaType.contains("html") }
-                .sortedBy { it.path }
-        }).distinctBy { it.path }
-        if (contentItems.isEmpty()) {
-            throw ImportException("В EPUB не найдено читаемых глав")
+                .sortedBy(ManifestItem::path)
+        }).distinctBy(ManifestItem::path)
+        if (contentItems.isEmpty()) throw ImportException("В EPUB не найдено читаемых глав")
+
+        val navItem = manifest.values.firstOrNull { "nav" in it.properties }
+        val ncxItem = spineAttributes["toc"]?.let(manifest::get)
+            ?: manifest.values.firstOrNull { it.mediaType == "application/x-dtbncx+xml" }
+        val navigation = when {
+            navItem != null && entries[navItem.path] != null -> runCatching {
+                EpubNavigationParser.parse(
+                    document = decodeStructuredText(entries.getValue(navItem.path)),
+                    documentPath = navItem.path,
+                    ncx = false,
+                )
+            }.getOrDefault(emptyMap())
+            ncxItem != null && entries[ncxItem.path] != null -> runCatching {
+                EpubNavigationParser.parse(
+                    document = decodeStructuredText(entries.getValue(ncxItem.path)),
+                    documentPath = ncxItem.path,
+                    ncx = true,
+                )
+            }.getOrDefault(emptyMap())
+            else -> emptyMap()
         }
 
+        val coverId = META_COVER.find(opf)?.groupValues?.get(2)
+        val coverItem = manifest.values.firstOrNull { "cover-image" in it.properties }
+            ?: coverId?.let(manifest::get)
         val files = linkedMapOf<String, ByteArray>()
         var skipped = 0
         manifest.values.forEach { item ->
@@ -209,18 +262,26 @@ class StructuredBookService(
                 return@mapIndexedNotNull null
             }
             val rawHtml = decodeStructuredText(rawBytes)
-            val chapterTitle = extractHeading(rawHtml)
-                .ifBlank { "Глава ${index + 1}" }
+            val nav = navigation[item.path]
+            val chapterTitle = nav?.title
+                ?.takeIf(String::isNotBlank)
+                ?: extractHeading(rawHtml).ifBlank { "Глава ${index + 1}" }
+            val volumeName = nav?.volume
+                ?.takeIf(String::isNotBlank)
+                ?: inferVolumeName(item.path)
+                ?: "Основное"
             val sanitized = sanitizeHtml(rawHtml, chapterTitle)
-            val bytes = sanitized.toByteArray(StandardCharsets.UTF_8)
-            files[item.path] = bytes
+            val chapterBytes = sanitized.toByteArray(StandardCharsets.UTF_8)
+            files[item.path] = chapterBytes
             ParsedChapter(
                 id = stableId(titleId, "chapter:${item.path}"),
                 title = chapterTitle,
                 number = (index + 1).toString(),
+                volumeName = volumeName.take(160),
                 relativePath = item.path,
-                contentHash = sha256(bytes),
+                contentHash = sha256(chapterBytes),
                 wordCount = countWords(plainText(sanitized)),
+                sortOrder = index + 1,
             )
         }
         if (chapters.isEmpty()) throw ImportException("Все главы EPUB оказались повреждены")
@@ -230,9 +291,9 @@ class StructuredBookService(
             title = title,
             author = author,
             format = "EPUB",
-            volumeName = "Основное",
             chapters = chapters,
             files = files,
+            coverRelativePath = coverItem?.path?.takeIf(files::containsKey),
             filesSkipped = skipped,
         )
     }
@@ -243,10 +304,7 @@ class StructuredBookService(
         val title = extractDocumentTitle(raw)
             .ifBlank { displayName.substringBeforeLast('.') }
             .ifBlank { "HTML-документ" }
-        val author = AUTHOR_META.find(raw)?.groupValues?.get(2)
-            ?.let(::decodeHtml)
-            ?.ifBlank { null }
-            ?: "Не указан"
+        val author = extractAuthor(raw).ifBlank { "Не указан" }
         val titleId = stableId("title", title)
         val head = HEAD_BLOCK.find(raw)?.value.orEmpty()
         val articles = ARTICLE_BLOCK.findAll(raw).map { it.value }.toList()
@@ -267,9 +325,11 @@ class StructuredBookService(
                 id = stableId(titleId, "chapter:$index:$chapterTitle"),
                 title = chapterTitle,
                 number = (index + 1).toString(),
+                volumeName = "Документ",
                 relativePath = relativePath,
                 contentHash = sha256(chapterBytes),
                 wordCount = countWords(plainText(document)),
+                sortOrder = index + 1,
             )
         }
         return ParsedStructuredBook(
@@ -277,9 +337,9 @@ class StructuredBookService(
             title = title,
             author = author,
             format = "HTML",
-            volumeName = "Документ",
             chapters = chapters,
             files = files,
+            coverRelativePath = null,
             filesSkipped = 0,
         )
     }
@@ -290,42 +350,74 @@ class StructuredBookService(
         var total = 0L
         val input = context.contentResolver.openInputStream(uri)
             ?: throw ImportException("Не удалось открыть EPUB")
-        ZipInputStream(BufferedInputStream(input)).use { zip ->
-            while (true) {
-                val entry = zip.nextEntry ?: break
-                count += 1
-                if (count > MAX_EPUB_ENTRIES) throw ImportException("В EPUB слишком много файлов")
-                if (entry.isDirectory) {
+        try {
+            ZipInputStream(BufferedInputStream(input)).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    count += 1
+                    if (count > MAX_EPUB_ENTRIES) throw ImportException("В EPUB слишком много файлов")
+                    if (entry.isDirectory) {
+                        zip.closeEntry()
+                        continue
+                    }
+                    val path = normalizeZipPath(entry.name)
+                    val bytes = readLimited(zip, MAX_EPUB_ENTRY_BYTES)
+                    total += bytes.size
+                    if (total > MAX_EPUB_TOTAL_BYTES) throw ImportException("EPUB слишком большой")
+                    entries[path] = bytes
                     zip.closeEntry()
-                    continue
                 }
-                val path = normalizeZipPath(entry.name)
-                val bytes = readLimited(zip, MAX_EPUB_ENTRY_BYTES)
-                total += bytes.size
-                if (total > MAX_EPUB_TOTAL_BYTES) throw ImportException("EPUB слишком большой")
-                entries[path] = bytes
-                zip.closeEntry()
             }
+        } catch (error: ImportException) {
+            throw error
+        } catch (error: Throwable) {
+            throw ImportException("Не удалось открыть EPUB: ${error.message ?: "повреждённый архив"}", error)
         }
         return entries
     }
 
-    private suspend fun existingChapterHashes(titleId: String): Map<String, String?> {
+    private suspend fun loadExistingChapters(titleId: String): Map<String, StoredImportChapter> {
         val title = repository.observeTitle(titleId).first() ?: return emptyMap()
-        return title.volumes.flatMap { it.chapters }
-            .associate { chapter -> chapter.id to chapter.contentHash }
+        return title.volumes.flatMap { volume ->
+            volume.chapters.map { chapter ->
+                StoredImportChapter(
+                    id = chapter.id,
+                    volumeId = chapter.volumeId,
+                    name = chapter.name,
+                    number = chapter.number,
+                    sortOrder = chapter.sortOrder,
+                    localPath = chapter.localUri,
+                    contentHash = chapter.contentHash,
+                )
+            }
+        }.associateBy(StoredImportChapter::id)
     }
 
-    private fun ParsedStructuredBook.changeSummary(existing: Map<String, String?>): ImportChangeSummary {
-        val current = chapters.associateBy { it.id }
-        val added = current.keys.count { it !in existing }
-        val changed = current.values.count { chapter ->
-            chapter.id in existing && existing[chapter.id] != chapter.contentHash
+    private fun ParsedStructuredBook.groupedVolumes(): List<ParsedVolume> {
+        val groups = linkedMapOf<String, MutableList<ParsedChapter>>()
+        chapters.sortedBy(ParsedChapter::sortOrder).forEach { chapter ->
+            groups.getOrPut(chapter.volumeName) { mutableListOf() } += chapter
         }
-        val unchanged = current.size - added - changed
-        val removed = existing.keys.count { it !in current }
-        return ImportChangeSummary(added, changed, removed, unchanged)
+        return groups.entries.mapIndexed { index, (name, volumeChapters) ->
+            ParsedVolume(
+                id = stableId(titleId, "volume:$name"),
+                name = name,
+                number = (index + 1).toString(),
+                sortOrder = index + 1,
+                chapters = volumeChapters,
+            )
+        }
     }
+
+    private fun ParsedChapter.toDiffChapter(volumeId: String): PlannedImportChapter =
+        PlannedImportChapter(
+            id = id,
+            volumeId = volumeId,
+            name = title,
+            number = number,
+            sortOrder = sortOrder,
+            contentHash = contentHash,
+        )
 
     private fun sanitizeHtml(source: String, title: String): String {
         var html = source
@@ -347,7 +439,10 @@ class StructuredBookService(
         """.trimIndent()
         html = when {
             HEAD_OPEN.containsMatchIn(html) -> html.replaceFirst(HEAD_OPEN, "$0$injectedHead")
-            HTML_OPEN.containsMatchIn(html) -> html.replaceFirst(HTML_OPEN, "$0<head><title>${escapeHtml(title)}</title>$injectedHead</head>")
+            HTML_OPEN.containsMatchIn(html) -> html.replaceFirst(
+                HTML_OPEN,
+                "$0<head><title>${escapeHtml(title)}</title>$injectedHead</head>",
+            )
             else -> "<html><head><title>${escapeHtml(title)}</title>$injectedHead</head><body>$html</body></html>"
         }
         return html
@@ -366,6 +461,21 @@ class StructuredBookService(
         HEADING_TAG.find(html)?.groupValues?.get(2)?.let(::decodeHtml).orEmpty()
             .lineSequence().firstOrNull().orEmpty().trim().take(180)
 
+    private fun extractAuthor(html: String): String {
+        val meta = META_TAG.findAll(html).map { parseAttributes(it.groupValues[1]) }
+            .firstOrNull { attributes ->
+                attributes["name"].equals("author", true) ||
+                    attributes["property"].equals("author", true)
+            }
+        return meta?.get("content")?.let(::decodeHtml).orEmpty()
+    }
+
+    private fun inferVolumeName(path: String): String? {
+        val segments = path.substringBeforeLast('/', "").split('/')
+        val segment = segments.lastOrNull { VOLUME_DIRECTORY.containsMatchIn(it) } ?: return null
+        return segment.replace('_', ' ').replace('-', ' ').replace(Regex("""\s+"""), " ").trim()
+    }
+
     private fun decodeHtml(value: String): String =
         Html.fromHtml(value, Html.FROM_HTML_MODE_LEGACY).toString().trim()
 
@@ -378,8 +488,10 @@ class StructuredBookService(
 
     private fun parseAttributes(source: String): Map<String, String> =
         ATTRIBUTE.findAll(source).associate { match ->
-            match.groupValues[1].lowercase(Locale.ROOT) to
-                (match.groupValues[3].ifEmpty { match.groupValues[4] })
+            val name = match.groupValues[1].ifBlank { match.groupValues[4] }
+                .lowercase(Locale.ROOT)
+            val value = match.groupValues[3].ifBlank { match.groupValues[5] }
+            name to value
         }
 
     private fun resolveZipPath(baseFile: String, relative: String): String {
@@ -434,10 +546,23 @@ class StructuredBookService(
     }
 
     private fun decodeStructuredText(bytes: ByteArray): String {
-        if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
-            return String(bytes, 3, bytes.size - 3, StandardCharsets.UTF_8)
+        if (bytes.isEmpty()) return ""
+        val (charset, offset) = when {
+            bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() -> StandardCharsets.UTF_8 to 3
+            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() -> StandardCharsets.UTF_16LE to 2
+            bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() -> StandardCharsets.UTF_16BE to 2
+            else -> null to 0
         }
-        return String(bytes, StandardCharsets.UTF_8)
+        if (charset != null) return String(bytes, offset, bytes.size - offset, charset)
+        return try {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (_: CharacterCodingException) {
+            String(bytes, java.nio.charset.Charset.forName("windows-1251"))
+        }
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -458,10 +583,7 @@ class StructuredBookService(
 
     private fun persistReadPermission(uri: Uri) {
         runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
+            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }
 
@@ -491,15 +613,26 @@ class StructuredBookService(
         val id: String,
         val path: String,
         val mediaType: String,
+        val properties: Set<String>,
     )
 
     private data class ParsedChapter(
         val id: String,
         val title: String,
         val number: String?,
+        val volumeName: String,
         val relativePath: String,
         val contentHash: String,
         val wordCount: Int,
+        val sortOrder: Int,
+    )
+
+    private data class ParsedVolume(
+        val id: String,
+        val name: String,
+        val number: String?,
+        val sortOrder: Int,
+        val chapters: List<ParsedChapter>,
     )
 
     private data class ParsedStructuredBook(
@@ -507,9 +640,9 @@ class StructuredBookService(
         val title: String,
         val author: String,
         val format: String,
-        val volumeName: String,
         val chapters: List<ParsedChapter>,
         val files: Map<String, ByteArray>,
+        val coverRelativePath: String?,
         val filesSkipped: Int,
     )
 
@@ -517,11 +650,13 @@ class StructuredBookService(
         val STRUCTURED_EXTENSIONS = setOf("epub", "html", "htm", "xhtml")
         val ROOTFILE_PATH = Regex("""(?is)full-path\s*=\s*[\"']([^\"']+)[\"']""")
         val ITEM_TAG = Regex("""(?is)<item\b([^>]*)/?>""")
+        val SPINE_TAG = Regex("""(?is)<spine\b([^>]*)>""")
         val ITEMREF_TAG = Regex("""(?is)<itemref\b([^>]*)/?>""")
         val ATTRIBUTE = Regex("""([\w:.-]+)\s*=\s*([\"'])(.*?)\2|([\w:.-]+)\s*=\s*([^\s>]+)""")
+        val META_COVER = Regex("""(?is)<meta\b[^>]*name\s*=\s*([\"'])cover\1[^>]*content\s*=\s*([\"'])(.*?)\2[^>]*>""")
+        val META_TAG = Regex("""(?is)<meta\b([^>]*)/?>""")
         val TITLE_TAG = Regex("""(?is)<title\b[^>]*>(.*?)</title\s*>""")
         val HEADING_TAG = Regex("""(?is)<(h1|h2|h3)\b[^>]*>(.*?)</\1\s*>""")
-        val AUTHOR_META = Regex("""(?is)<meta\b[^>]*name\s*=\s*([\"'])author\1[^>]*content\s*=\s*([\"'])(.*?)\2[^>]*>""")
         val HEAD_BLOCK = Regex("""(?is)<head\b[^>]*>.*?</head\s*>""")
         val ARTICLE_BLOCK = Regex("""(?is)<article\b[^>]*>.*?</article\s*>""")
         val XML_DECLARATION = Regex("""(?is)<\?xml.*?\?>""")
@@ -530,6 +665,7 @@ class StructuredBookService(
         val JAVASCRIPT_URL = Regex("""(?is)javascript\s*:""")
         val HEAD_OPEN = Regex("""(?is)<head\b[^>]*>""")
         val HTML_OPEN = Regex("""(?is)<html\b[^>]*>""")
+        val VOLUME_DIRECTORY = Regex("""(?i)^(том|volume|vol\.?|часть|part)\s*[-_. ]*\d+.*$""")
         val WORD_PATTERN = Regex("""[\p{L}\p{N}]+""")
         const val MAX_EPUB_ENTRIES = 20_000
         const val MAX_EPUB_ENTRY_BYTES = 24L * 1024L * 1024L

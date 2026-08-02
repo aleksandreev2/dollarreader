@@ -66,6 +66,7 @@ data class LocalTitleImport(
     val format: String,
     val sourceUri: String,
     val volumes: List<LocalVolumeImport>,
+    val coverPath: String? = null,
 )
 
 data class LocalVolumeImport(

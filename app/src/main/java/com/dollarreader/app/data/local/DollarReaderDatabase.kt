@@ -181,5 +181,12 @@ abstract class DollarReaderDatabase : RoomDatabase() {
                     .build()
                     .also { instance = it }
             }
+
+        fun closeInstance() {
+            synchronized(this) {
+                instance?.close()
+                instance = null
+            }
+        }
     }
 }

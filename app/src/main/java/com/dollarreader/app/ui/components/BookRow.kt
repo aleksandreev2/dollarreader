@@ -47,6 +47,7 @@ fun BookRow(
             BookCover(
                 title = book.title,
                 seed = book.accentSeed,
+                titleId = book.id,
                 modifier = Modifier.size(width = 62.dp, height = 88.dp),
             )
             Spacer(Modifier.width(14.dp))

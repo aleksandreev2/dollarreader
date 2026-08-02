@@ -20,6 +20,9 @@ import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -27,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.dollarreader.app.data.LibraryBackupRestoreService
 import com.dollarreader.app.data.LibraryExportService
 import com.dollarreader.app.model.ReaderPreferences
 import com.dollarreader.app.ui.components.ReaderSettingsControls
@@ -50,56 +55,139 @@ fun SettingsScreen(
     onReaderPreferencesChange: (ReaderPreferences) -> Unit,
     onExportNotes: suspend (Uri) -> LibraryExportService.ExportSummary,
     onCreateBackup: suspend (Uri) -> LibraryExportService.BackupSummary,
+    onInspectBackup: suspend (Uri) -> LibraryBackupRestoreService.RestorePreview,
+    onStageRestore: suspend (Uri) -> LibraryBackupRestoreService.RestorePreview,
+    onRestartForRestore: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var isWorking by rememberSaveable { mutableStateOf(false) }
     var operationMessage by remember { mutableStateOf<OperationMessage?>(null) }
+    var pendingRestore by remember { mutableStateOf<PendingRestore?>(null) }
 
     val notesLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/markdown"),
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            isWorking = true
-            operationMessage = null
-            runCatching { onExportNotes(uri) }
-                .onSuccess { summary ->
-                    operationMessage = OperationMessage(
-                        text = "Экспортировано элементов: ${summary.itemCount}",
-                        isError = false,
-                    )
-                }
-                .onFailure { error ->
-                    operationMessage = OperationMessage(
-                        text = error.message ?: "Не удалось экспортировать заметки",
-                        isError = true,
-                    )
-                }
-            isWorking = false
+        if (uri != null) {
+            scope.launch {
+                isWorking = true
+                operationMessage = null
+                runCatching { onExportNotes(uri) }
+                    .onSuccess { summary ->
+                        operationMessage = OperationMessage(
+                            text = "Экспортировано элементов: ${summary.itemCount}",
+                            isError = false,
+                        )
+                    }
+                    .onFailure { error ->
+                        operationMessage = OperationMessage(
+                            text = error.message ?: "Не удалось экспортировать заметки",
+                            isError = true,
+                        )
+                    }
+                isWorking = false
+            }
         }
     }
     val backupLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            isWorking = true
-            operationMessage = null
-            runCatching { onCreateBackup(uri) }
-                .onSuccess { summary ->
-                    operationMessage = OperationMessage(
-                        text = "Резервная копия создана: ${summary.titleCount} тайтлов, ${summary.fileCount} файлов",
-                        isError = false,
-                    )
-                }
-                .onFailure { error ->
-                    operationMessage = OperationMessage(
-                        text = error.message ?: "Не удалось создать резервную копию",
-                        isError = true,
-                    )
-                }
-            isWorking = false
+        if (uri != null) {
+            scope.launch {
+                isWorking = true
+                operationMessage = null
+                runCatching { onCreateBackup(uri) }
+                    .onSuccess { summary ->
+                        operationMessage = OperationMessage(
+                            text = "Резервная копия создана: ${summary.titleCount} тайтлов, ${summary.fileCount} файлов",
+                            isError = false,
+                        )
+                    }
+                    .onFailure { error ->
+                        operationMessage = OperationMessage(
+                            text = error.message ?: "Не удалось создать резервную копию",
+                            isError = true,
+                        )
+                    }
+                isWorking = false
+            }
         }
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                isWorking = true
+                operationMessage = null
+                runCatching { onInspectBackup(uri) }
+                    .onSuccess { preview -> pendingRestore = PendingRestore(uri, preview) }
+                    .onFailure { error ->
+                        operationMessage = OperationMessage(
+                            text = error.message ?: "Не удалось проверить резервную копию",
+                            isError = true,
+                        )
+                    }
+                isWorking = false
+            }
+        }
+    }
+
+    pendingRestore?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { if (!isWorking) pendingRestore = null },
+            title = { Text("Восстановить библиотеку?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Текущая библиотека, прогресс, настройки и метки будут полностью заменены данными из архива.",
+                    )
+                    Text("Тайтлов: ${pending.preview.titleCount}")
+                    Text("Сохранённых меток: ${pending.preview.savedItemCount}")
+                    Text("Файлов в копии: ${pending.preview.fileCount}")
+                    pending.preview.createdAt?.let { Text("Создана: $it") }
+                    Text(
+                        "После подготовки DollarReader перезапустит экран и применит восстановление до открытия базы.",
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !isWorking,
+                    onClick = {
+                        scope.launch {
+                            isWorking = true
+                            runCatching { onStageRestore(pending.uri) }
+                                .onSuccess {
+                                    pendingRestore = null
+                                    onRestartForRestore()
+                                }
+                                .onFailure { error ->
+                                    operationMessage = OperationMessage(
+                                        text = error.message ?: "Не удалось подготовить восстановление",
+                                        isError = true,
+                                    )
+                                    isWorking = false
+                                }
+                        }
+                    },
+                ) {
+                    if (isWorking) {
+                        CircularProgressIndicator(strokeWidth = 2.dp)
+                    } else {
+                        Text("Заменить библиотеку")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isWorking,
+                    onClick = { pendingRestore = null },
+                ) {
+                    Text("Отмена")
+                }
+            },
+        )
     }
 
     LazyColumn(
@@ -121,11 +209,9 @@ fun SettingsScreen(
             }
         }
         operationMessage?.let { message ->
-            item {
-                OperationMessageCard(message)
-            }
+            item { OperationMessageCard(message) }
         }
-        if (isWorking) {
+        if (isWorking && pendingRestore == null) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -137,7 +223,7 @@ fun SettingsScreen(
                     ) {
                         CircularProgressIndicator()
                         Text(
-                            "Подготавливаю файл…",
+                            "Подготавливаю данные…",
                             modifier = Modifier.padding(start = 14.dp),
                         )
                     }
@@ -197,6 +283,23 @@ fun SettingsScreen(
         }
         item {
             SettingCard(
+                title = "Восстановить резервную копию",
+                subtitle = "Проверяет архив и безопасно заменяет библиотеку после подтверждения",
+                icon = { Icon(Icons.Outlined.Restore, contentDescription = null) },
+                enabled = !isWorking,
+                onClick = {
+                    restoreLauncher.launch(
+                        arrayOf(
+                            "application/zip",
+                            "application/x-zip-compressed",
+                            "application/octet-stream",
+                        ),
+                    )
+                },
+            )
+        }
+        item {
+            SettingCard(
                 title = "Google Drive",
                 subtitle = "Облачная синхронизация будет добавлена отдельным крупным этапом",
                 icon = { Icon(Icons.Outlined.CloudQueue, contentDescription = null) },
@@ -223,11 +326,7 @@ private fun OperationMessageCard(message: OperationMessage) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = if (message.isError) {
-                    Icons.Outlined.ErrorOutline
-                } else {
-                    Icons.Outlined.CheckCircle
-                },
+                imageVector = if (message.isError) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,
                 contentDescription = null,
             )
             Text(
@@ -258,9 +357,7 @@ private fun SettingCard(
             .fillMaxWidth()
             .then(clickModifier),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -284,6 +381,11 @@ private fun SettingCard(
         }
     }
 }
+
+private data class PendingRestore(
+    val uri: Uri,
+    val preview: LibraryBackupRestoreService.RestorePreview,
+)
 
 private data class OperationMessage(
     val text: String,

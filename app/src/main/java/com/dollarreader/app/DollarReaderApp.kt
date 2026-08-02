@@ -1,5 +1,6 @@
 package com.dollarreader.app
 
+import android.app.Activity
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,11 +39,13 @@ import androidx.navigation.navArgument
 import com.dollarreader.app.data.AnnotationRepository
 import com.dollarreader.app.data.ChapterContentLoader
 import com.dollarreader.app.data.ChapterNavigationRepository
+import com.dollarreader.app.data.LibraryBackupRestoreService
 import com.dollarreader.app.data.LibraryExportService
 import com.dollarreader.app.data.LibraryRepository
 import com.dollarreader.app.data.LocalTitleDeletionService
 import com.dollarreader.app.data.ReaderSettingsRepository
 import com.dollarreader.app.data.importer.BookFileImportCoordinator
+import com.dollarreader.app.data.importer.Fb2BookService
 import com.dollarreader.app.data.importer.FolderBookImporter
 import com.dollarreader.app.data.importer.ImportPreview
 import com.dollarreader.app.data.importer.ImportResult
@@ -85,37 +88,21 @@ private object Routes {
 @Composable
 fun DollarReaderApp() {
     var darkTheme by rememberSaveable { mutableStateOf(false) }
-    val context = LocalContext.current.applicationContext
-    val database = remember(context) {
-        DollarReaderDatabase.getInstance(context)
+    val uiContext = LocalContext.current
+    val context = uiContext.applicationContext
+    val database = remember(context) { DollarReaderDatabase.getInstance(context) }
+    val repository = remember(database) { LibraryRepository(database) }
+    val readerSettingsRepository = remember(database) { ReaderSettingsRepository(database) }
+    val chapterNavigationRepository = remember(database) { ChapterNavigationRepository(database) }
+    val chapterContentLoader = remember(database) { ChapterContentLoader(database) }
+    val annotationRepository = remember(database) { AnnotationRepository(database) }
+    val localBookService = remember(context, repository) { LocalBookService(context, repository) }
+    val structuredBookService = remember(context, repository) { StructuredBookService(context, repository) }
+    val fb2BookService = remember(context, repository) { Fb2BookService(context, repository) }
+    val bookFileImportCoordinator = remember(localBookService, structuredBookService, fb2BookService) {
+        BookFileImportCoordinator(localBookService, structuredBookService, fb2BookService)
     }
-    val repository = remember(database) {
-        LibraryRepository(database)
-    }
-    val readerSettingsRepository = remember(database) {
-        ReaderSettingsRepository(database)
-    }
-    val chapterNavigationRepository = remember(database) {
-        ChapterNavigationRepository(database)
-    }
-    val chapterContentLoader = remember(database) {
-        ChapterContentLoader(database)
-    }
-    val annotationRepository = remember(database) {
-        AnnotationRepository(database)
-    }
-    val localBookService = remember(context, repository) {
-        LocalBookService(context, repository)
-    }
-    val structuredBookService = remember(context, repository) {
-        StructuredBookService(context, repository)
-    }
-    val bookFileImportCoordinator = remember(localBookService, structuredBookService) {
-        BookFileImportCoordinator(localBookService, structuredBookService)
-    }
-    val folderImporter = remember(context, repository) {
-        FolderBookImporter(context, repository)
-    }
+    val folderImporter = remember(context, repository) { FolderBookImporter(context, repository) }
     val titleDeletionService = remember(context, repository) {
         LocalTitleDeletionService(context, repository)
     }
@@ -127,6 +114,7 @@ fun DollarReaderApp() {
             annotationRepository = annotationRepository,
         )
     }
+    val backupRestoreService = remember(context) { LibraryBackupRestoreService(context) }
     val books by repository.books.collectAsState(initial = emptyList())
     val savedItems by annotationRepository.savedItems.collectAsState(initial = emptyList())
     val readerPreferences by readerSettingsRepository.preferences.collectAsState(
@@ -195,17 +183,13 @@ fun DollarReaderApp() {
                 composable(Routes.Home) {
                     HomeScreen(
                         books = books,
-                        onBookClick = { book ->
-                            navController.navigate(Routes.book(book.id))
-                        },
+                        onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
                     )
                 }
                 composable(Routes.Library) {
                     LibraryScreen(
                         books = books,
-                        onBookClick = { book ->
-                            navController.navigate(Routes.book(book.id))
-                        },
+                        onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
                         onPreviewImport = bookFileImportCoordinator::previewBook,
                         onImport = bookFileImportCoordinator::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
@@ -248,9 +232,7 @@ fun DollarReaderApp() {
                             }
                         },
                         onDeleteSaved = { annotationId ->
-                            scope.launch {
-                                annotationRepository.deleteAnnotation(annotationId)
-                            }
+                            scope.launch { annotationRepository.deleteAnnotation(annotationId) }
                         },
                     )
                 }
@@ -260,20 +242,21 @@ fun DollarReaderApp() {
                         onDarkThemeChange = { darkTheme = it },
                         readerPreferences = readerPreferences,
                         onReaderPreferencesChange = { preferences ->
-                            scope.launch {
-                                readerSettingsRepository.savePreferences(preferences)
-                            }
+                            scope.launch { readerSettingsRepository.savePreferences(preferences) }
                         },
                         onExportNotes = libraryExportService::exportNotes,
                         onCreateBackup = libraryExportService::createBackup,
+                        onInspectBackup = backupRestoreService::inspectBackup,
+                        onStageRestore = backupRestoreService::stageRestore,
+                        onRestartForRestore = {
+                            (uiContext as? Activity)?.recreate()
+                        },
                     )
                 }
                 composable(
                     route = Routes.BookPattern,
                     arguments = listOf(
-                        navArgument(Routes.BookId) {
-                            type = NavType.StringType
-                        },
+                        navArgument(Routes.BookId) { type = NavType.StringType },
                     ),
                 ) { entry ->
                     val bookId = entry.arguments?.getString(Routes.BookId)
@@ -293,30 +276,20 @@ fun DollarReaderApp() {
                         val previewUpdateAction: (suspend () -> ImportPreview)? =
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
-                                    "ZIP/TXT" -> suspend {
+                                    "ZIP/TXT", "EPUB", "HTML", "FB2" -> suspend {
                                         bookFileImportCoordinator.previewBook(uri)
                                     }
-                                    "ПАПКА/TXT" -> suspend {
-                                        folderImporter.previewFolder(uri)
-                                    }
-                                    "EPUB", "HTML" -> suspend {
-                                        bookFileImportCoordinator.previewBook(uri)
-                                    }
+                                    "ПАПКА/TXT" -> suspend { folderImporter.previewFolder(uri) }
                                     else -> null
                                 }
                             }
                         val applyUpdateAction: (suspend () -> ImportResult)? =
                             sourceUri?.let { uri ->
                                 when (sourceFormat) {
-                                    "ZIP/TXT" -> suspend {
+                                    "ZIP/TXT", "EPUB", "HTML", "FB2" -> suspend {
                                         bookFileImportCoordinator.importBook(uri)
                                     }
-                                    "ПАПКА/TXT" -> suspend {
-                                        folderImporter.importFolder(uri)
-                                    }
-                                    "EPUB", "HTML" -> suspend {
-                                        bookFileImportCoordinator.importBook(uri)
-                                    }
+                                    "ПАПКА/TXT" -> suspend { folderImporter.importFolder(uri) }
                                     else -> null
                                 }
                             }
@@ -326,9 +299,7 @@ fun DollarReaderApp() {
                             contents = contents,
                             management = management,
                             onBack = { navController.popBackStack() },
-                            onRead = {
-                                navController.navigate(Routes.reader(book.id))
-                            },
+                            onRead = { navController.navigate(Routes.reader(book.id)) },
                             onChapterClick = { chapterOrder ->
                                 scope.launch {
                                     repository.openChapter(book.id, chapterOrder)
@@ -360,9 +331,7 @@ fun DollarReaderApp() {
                 composable(
                     route = Routes.ReaderPattern,
                     arguments = listOf(
-                        navArgument(Routes.BookId) {
-                            type = NavType.StringType
-                        },
+                        navArgument(Routes.BookId) { type = NavType.StringType },
                     ),
                 ) { entry ->
                     val bookId = entry.arguments?.getString(Routes.BookId)
@@ -375,18 +344,13 @@ fun DollarReaderApp() {
                             key1 = book.id,
                             key2 = book.currentChapter,
                         ) {
-                            value = chapterContentLoader.loadChapter(
-                                book.id,
-                                book.currentChapter,
-                            )
+                            value = chapterContentLoader.loadChapter(book.id, book.currentChapter)
                         }
                         val initialPosition by produceState<ChapterReadingPosition?>(
                             initialValue = null,
                             key1 = chapter?.id,
                         ) {
-                            value = chapter?.id?.let {
-                                readerSettingsRepository.loadPosition(it)
-                            }
+                            value = chapter?.id?.let { readerSettingsRepository.loadPosition(it) }
                         }
                         val annotations by produceState<List<ReadingAnnotation>>(
                             initialValue = emptyList(),
@@ -446,12 +410,10 @@ fun DollarReaderApp() {
                             }
                         }
                         val updatePreferences: (ReaderPreferences) -> Unit = { preferences ->
-                            scope.launch {
-                                readerSettingsRepository.savePreferences(preferences)
-                            }
+                            scope.launch { readerSettingsRepository.savePreferences(preferences) }
                         }
 
-                        if (book.format == "EPUB" || book.format == "HTML") {
+                        if (book.format in setOf("EPUB", "HTML", "FB2")) {
                             RichReaderScreen(
                                 book = book,
                                 chapter = chapter,
@@ -505,9 +467,7 @@ fun DollarReaderApp() {
                                     }
                                 },
                                 onDeleteAnnotation = { annotationId ->
-                                    scope.launch {
-                                        annotationRepository.deleteAnnotation(annotationId)
-                                    }
+                                    scope.launch { annotationRepository.deleteAnnotation(annotationId) }
                                 },
                             )
                         }

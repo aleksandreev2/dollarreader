@@ -1,5 +1,7 @@
 package com.dollarreader.app.ui.components
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,15 +15,23 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val coverGradients = listOf(
     listOf(Color(0xFF24133F), Color(0xFF7135C9), Color(0xFFA75CFF)),
@@ -34,11 +44,30 @@ fun BookCover(
     title: String,
     seed: Int,
     modifier: Modifier = Modifier,
+    titleId: String? = null,
 ) {
+    val context = LocalContext.current.applicationContext
+    val image = produceState<ImageBitmap?>(initialValue = null, titleId) {
+        value = withContext(Dispatchers.IO) {
+            titleId?.let { findImportedCover(context.filesDir, it) }
+        }
+    }.value
+    val shape = RoundedCornerShape(18.dp)
+
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = "Обложка $title",
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(shape),
+        )
+        return
+    }
+
     val colors = coverGradients[seed.mod(coverGradients.size)]
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
+            .clip(shape)
             .background(Brush.verticalGradient(colors)),
     ) {
         Box(
@@ -80,4 +109,29 @@ fun BookCover(
             )
         }
     }
+}
+
+private fun findImportedCover(filesDir: File, titleId: String): ImageBitmap? {
+    val root = File(filesDir, "library/$titleId/structured")
+    if (!root.isDirectory) return null
+    val candidates = root.walkTopDown()
+        .filter(File::isFile)
+        .take(96)
+        .sortedWith(
+            compareBy<File> { file ->
+                val name = file.name.lowercase()
+                when {
+                    name.contains("cover") || name.contains("front") || name.contains("облож") -> 0
+                    file.parentFile?.name.equals("images", true) -> 1
+                    else -> 2
+                }
+            }.thenBy(File::length),
+        )
+    for (file in candidates) {
+        val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+        if (bitmap != null && bitmap.width >= 80 && bitmap.height >= 100) {
+            return bitmap.asImageBitmap()
+        }
+    }
+    return null
 }
