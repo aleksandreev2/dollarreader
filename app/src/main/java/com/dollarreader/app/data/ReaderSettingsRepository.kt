@@ -53,6 +53,52 @@ class ReaderSettingsRepository(
             )
         }
 
+    suspend fun openSavedLocation(
+        titleId: String,
+        chapterId: String,
+        chapterNumber: Int,
+        paragraphIndex: Int,
+        showChapterTitle: Boolean,
+    ) {
+        val listItemIndex = paragraphIndex.coerceAtLeast(0) +
+            if (showChapterTitle) 2 else 1
+        val now = System.currentTimeMillis()
+
+        database.withTransaction {
+            val previousPosition = dao.chapterPositionById(chapterId)
+            val previousState = dao.chapterStateById(chapterId)
+            val progress = when {
+                previousState?.isRead == true -> 1f
+                previousPosition != null -> previousPosition.progress.coerceIn(0f, 1f)
+                previousState != null -> previousState.progress.coerceIn(0f, 1f)
+                else -> 0f
+            }
+
+            dao.upsertChapterPosition(
+                ChapterPositionEntity(
+                    chapterId = chapterId,
+                    titleId = titleId,
+                    firstVisibleItemIndex = listItemIndex,
+                    firstVisibleItemScrollOffset = 0,
+                    progress = progress,
+                    updatedAt = now,
+                ),
+            )
+            dao.upsertReadingProgress(
+                ReadingProgressEntity(
+                    titleId = titleId,
+                    currentChapterId = chapterId,
+                    chapterNumber = chapterNumber,
+                    chapterProgress = progress,
+                    scrollOffset = 0,
+                    locator = "$listItemIndex:0",
+                    updatedAt = now,
+                ),
+            )
+            dao.touchTitle(titleId, now)
+        }
+    }
+
     suspend fun savePosition(
         titleId: String,
         chapterNumber: Int,
