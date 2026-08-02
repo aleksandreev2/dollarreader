@@ -179,7 +179,7 @@ fun LibraryScreen(
                     onDismissRequest = { addMenuExpanded = false },
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Файл TXT, ZIP, EPUB или HTML") },
+                        text = { Text("Файл TXT, ZIP, EPUB, FB2 или HTML") },
                         leadingIcon = {
                             Icon(Icons.Outlined.Description, contentDescription = null)
                         },
@@ -191,6 +191,7 @@ fun LibraryScreen(
                                     "application/zip",
                                     "application/x-zip-compressed",
                                     "application/epub+zip",
+                                    "application/x-fictionbook+xml",
                                     "text/html",
                                     "application/xhtml+xml",
                                     "application/octet-stream",
@@ -221,7 +222,7 @@ fun LibraryScreen(
 
         if (books.isEmpty()) {
             Text(
-                text = "Нажмите «Добавить», чтобы выбрать TXT, ZIP, EPUB, HTML или папку с главами",
+                text = "Нажмите «Добавить», чтобы выбрать TXT, ZIP, EPUB, FB2, HTML или папку с главами",
                 modifier = Modifier.padding(top = 32.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -493,5 +494,6 @@ private val DETAILED_IMPORT_FORMATS = setOf(
     "ПАПКА/TXT",
     "ZIP/TXT",
     "EPUB",
+    "FB2",
     "HTML",
 )
