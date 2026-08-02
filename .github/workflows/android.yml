@@ -26,7 +26,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon :app:assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon :app:assembleDebug 2>&1 | tee build.log
 
       - name: Upload debug APK
         if: success()
@@ -35,6 +38,14 @@ jobs:
           name: DollarReader-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DollarReader-build-log
+          path: build.log
+          if-no-files-found: warn
 
       - name: Report build status
         if: always()
@@ -51,4 +62,5 @@ jobs:
               description: outcome === 'success'
                 ? 'Debug APK built successfully'
                 : 'Android build failed',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
