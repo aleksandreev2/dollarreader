@@ -84,7 +84,10 @@ fun LibraryScreen(
             }.onSuccess { preview ->
                 pendingImport = PendingImport(uri, preview, source)
             }.onFailure { error ->
-                notice = ImportNotice(error.message ?: "Не удалось проверить выбранный источник", true)
+                notice = ImportNotice(
+                    error.message ?: "Не удалось проверить выбранный источник",
+                    true,
+                )
             }
             isWorking = false
         }
@@ -118,7 +121,10 @@ fun LibraryScreen(
                         notice = ImportNotice(result.successMessage(), false)
                         pendingImport = null
                     }.onFailure { error ->
-                        notice = ImportNotice(error.message ?: "Не удалось импортировать источник", true)
+                        notice = ImportNotice(
+                            error.message ?: "Не удалось импортировать источник",
+                            true,
+                        )
                     }
                     isWorking = false
                 }
@@ -146,7 +152,10 @@ fun LibraryScreen(
                 )
             }
             Spacer(Modifier.weight(1f))
-            OutlinedButton(onClick = { }, shape = RoundedCornerShape(16.dp)) {
+            OutlinedButton(
+                onClick = { },
+                shape = RoundedCornerShape(16.dp),
+            ) {
                 Icon(Icons.Outlined.FilterList, contentDescription = "Фильтры")
             }
             Spacer(Modifier.width(8.dp))
@@ -157,7 +166,10 @@ fun LibraryScreen(
                     shape = RoundedCornerShape(16.dp),
                 ) {
                     if (isWorking && pendingImport == null) {
-                        CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
+                        CircularProgressIndicator(
+                            modifier = Modifier.width(20.dp),
+                            strokeWidth = 2.dp,
+                        )
                     } else {
                         Icon(Icons.Outlined.Add, contentDescription = "Добавить книгу")
                     }
@@ -168,7 +180,9 @@ fun LibraryScreen(
                 ) {
                     DropdownMenuItem(
                         text = { Text("Файл TXT или ZIP") },
-                        leadingIcon = { Icon(Icons.Outlined.Description, contentDescription = null) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.Description, contentDescription = null)
+                        },
                         onClick = {
                             addMenuExpanded = false
                             filePicker.launch(
@@ -183,7 +197,9 @@ fun LibraryScreen(
                     )
                     DropdownMenuItem(
                         text = { Text("Папка с главами") },
-                        leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.FolderOpen, contentDescription = null)
+                        },
                         onClick = {
                             addMenuExpanded = false
                             folderPicker.launch(null)
@@ -194,7 +210,10 @@ fun LibraryScreen(
         }
 
         notice?.let { currentNotice ->
-            ImportNoticeCard(currentNotice, onDismiss = { notice = null })
+            ImportNoticeCard(
+                notice = currentNotice,
+                onDismiss = { notice = null },
+            )
         }
 
         if (books.isEmpty()) {
@@ -209,7 +228,10 @@ fun LibraryScreen(
                 contentPadding = PaddingValues(bottom = 24.dp),
             ) {
                 items(books, key = { it.id }) { book ->
-                    BookRow(book = book, onClick = { onBookClick(book) })
+                    BookRow(
+                        book = book,
+                        onClick = { onBookClick(book) },
+                    )
                 }
             }
         }
@@ -223,12 +245,19 @@ private fun ImportPreviewDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    val detailedFolderDiff = preview.format == "ПАПКА/TXT"
+    val detailedDiff = preview.format == "ПАПКА/TXT" || preview.format == "ZIP/TXT"
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
-                Text(if (preview.updatedExistingTitle) "Обновление тайтла" else "Импорт тайтла")
+                Text(
+                    if (preview.updatedExistingTitle) {
+                        "Обновление тайтла"
+                    } else {
+                        "Импорт тайтла"
+                    },
+                )
                 Text(
                     preview.title,
                     style = MaterialTheme.typography.titleMedium,
@@ -248,7 +277,7 @@ private fun ImportPreviewDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (preview.updatedExistingTitle && detailedFolderDiff) {
+                if (preview.updatedExistingTitle && detailedDiff) {
                     ChangeSummaryCard(preview)
                     Text(
                         if (preview.changes.hasChanges) {
@@ -264,6 +293,7 @@ private fun ImportPreviewDialog(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+
                 HorizontalDivider()
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 360.dp),
@@ -277,7 +307,10 @@ private fun ImportPreviewDialog(
                                 modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                             )
                         }
-                        items(volume.chapters, key = { "${volume.name}-${it.sourcePath}" }) { chapter ->
+                        items(
+                            items = volume.chapters,
+                            key = { "${volume.name}-${it.sourcePath}" },
+                        ) { chapter ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -290,7 +323,7 @@ private fun ImportPreviewDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.weight(1f),
                                 )
-                                if (detailedFolderDiff) {
+                                if (detailedDiff && preview.updatedExistingTitle) {
                                     Text(
                                         text = chapter.change.label(),
                                         style = MaterialTheme.typography.labelSmall,
@@ -305,14 +338,22 @@ private fun ImportPreviewDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm, enabled = !isImporting) {
+            Button(
+                onClick = onConfirm,
+                enabled = !isImporting,
+            ) {
                 if (isImporting) {
-                    CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.width(18.dp),
+                        strokeWidth = 2.dp,
+                    )
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
                     when {
-                        preview.updatedExistingTitle && detailedFolderDiff && !preview.changes.hasChanges -> "Готово"
+                        preview.updatedExistingTitle &&
+                            detailedDiff &&
+                            !preview.changes.hasChanges -> "Готово"
                         preview.updatedExistingTitle -> "Обновить"
                         else -> "Импортировать"
                     },
@@ -320,7 +361,12 @@ private fun ImportPreviewDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isImporting) { Text("Отмена") }
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isImporting,
+            ) {
+                Text("Отмена")
+            }
         },
     )
 }
@@ -329,7 +375,9 @@ private fun ImportPreviewDialog(
 private fun ChangeSummaryCard(preview: ImportPreview) {
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
     ) {
         Column(
             modifier = Modifier
@@ -365,25 +413,34 @@ private fun ImportChapterChange.label(): String = when (this) {
 }
 
 private fun ImportResult.successMessage(): String {
-    if (format != "ПАПКА/TXT") {
+    val hasDetailedDiff = format == "ПАПКА/TXT" || format == "ZIP/TXT"
+    if (!hasDetailedDiff) {
         val action = if (updatedExistingTitle) "обновлён" else "добавлен"
         return "$title: $action, глав — $chaptersImported"
     }
-    if (!changes.hasChanges) return "$title: изменений нет, глав — $chaptersImported"
+    if (!changes.hasChanges) {
+        return "$title: изменений нет, глав — $chaptersImported"
+    }
     val action = if (updatedExistingTitle) "обновлён" else "добавлен"
     return "$title: $action · +${changes.added}, изменено ${changes.changed}, удалено ${changes.removed}"
 }
 
 @Composable
-private fun ImportNoticeCard(notice: ImportNotice, onDismiss: () -> Unit) {
+private fun ImportNoticeCard(
+    notice: ImportNotice,
+    onDismiss: () -> Unit,
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (notice.isError) MaterialTheme.colorScheme.errorContainer
-            else MaterialTheme.colorScheme.secondaryContainer,
+            containerColor = if (notice.isError) {
+                MaterialTheme.colorScheme.errorContainer
+            } else {
+                MaterialTheme.colorScheme.secondaryContainer
+            },
         ),
     ) {
         Row(
@@ -393,11 +450,19 @@ private fun ImportNoticeCard(notice: ImportNotice, onDismiss: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = if (notice.isError) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,
+                imageVector = if (notice.isError) {
+                    Icons.Outlined.ErrorOutline
+                } else {
+                    Icons.Outlined.CheckCircle
+                },
                 contentDescription = null,
             )
             Spacer(Modifier.width(10.dp))
-            Text(notice.message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                notice.message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
             IconButton(onClick = onDismiss) {
                 Icon(Icons.Outlined.Close, contentDescription = "Закрыть сообщение")
             }
@@ -405,10 +470,18 @@ private fun ImportNoticeCard(notice: ImportNotice, onDismiss: () -> Unit) {
     }
 }
 
-private enum class ImportSource { File, Folder }
+private enum class ImportSource {
+    File,
+    Folder,
+}
+
 private data class PendingImport(
     val uri: Uri,
     val preview: ImportPreview,
     val source: ImportSource,
 )
-private data class ImportNotice(val message: String, val isError: Boolean)
+
+private data class ImportNotice(
+    val message: String,
+    val isError: Boolean,
+)
