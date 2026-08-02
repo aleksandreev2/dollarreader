@@ -70,6 +70,50 @@ interface LibraryDao {
     )
     fun observeReadingAnnotations(chapterId: String): Flow<List<ReadingAnnotationEntity>>
 
+    @Query(
+        """
+        SELECT
+            a.id AS id,
+            a.titleId AS titleId,
+            a.chapterId AS chapterId,
+            a.paragraphIndex AS paragraphIndex,
+            a.startOffset AS startOffset,
+            a.endOffset AS endOffset,
+            a.selectedText AS selectedText,
+            a.type AS type,
+            a.noteText AS noteText,
+            a.color AS color,
+            a.createdAt AS createdAt,
+            a.updatedAt AS updatedAt,
+            t.title AS titleName,
+            c.name AS chapterName,
+            c.sortOrder AS chapterSortOrder
+        FROM reading_annotations AS a
+        INNER JOIN titles AS t ON t.id = a.titleId
+        INNER JOIN chapters AS c ON c.id = a.chapterId
+        ORDER BY a.updatedAt DESC, a.id DESC
+        """,
+    )
+    fun observeAllReadingAnnotations(): Flow<List<ReadingAnnotationOverviewRow>>
+
+    @Query(
+        """
+        SELECT
+            t.id AS titleId,
+            t.title AS titleName,
+            c.id AS chapterId,
+            c.name AS chapterName,
+            c.sortOrder AS chapterSortOrder,
+            c.localUri AS localUri
+        FROM chapters AS c
+        INNER JOIN titles AS t ON t.id = c.titleId
+        WHERE c.localUri IS NOT NULL
+          AND (:titleId IS NULL OR c.titleId = :titleId)
+        ORDER BY t.title COLLATE NOCASE, c.sortOrder
+        """,
+    )
+    suspend fun searchableChapters(titleId: String?): List<SearchableChapterRow>
+
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     suspend fun titleById(titleId: String): TitleEntity?
 
