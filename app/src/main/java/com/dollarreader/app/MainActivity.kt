@@ -5,12 +5,14 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.dollarreader.app.data.LibraryBackupRestoreService
 import com.dollarreader.app.ui.reader.VolumeChapterDirection
 import com.dollarreader.app.ui.reader.VolumeKeyChapterNavigator
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LibraryBackupRestoreService.applyPendingRestore(applicationContext)
         enableEdgeToEdge()
         setContent {
             DollarReaderApp()
