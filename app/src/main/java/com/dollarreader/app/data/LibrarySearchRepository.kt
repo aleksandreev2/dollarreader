@@ -66,7 +66,7 @@ class LibrarySearchRepository(
                     }
 
                     val actualHash = chapter.contentHash
-                        ?.takeIf(String::isNotBlank)
+                        .takeIf(String::isNotBlank)
                         ?: file.sha256()
                     val previous = indexed[chapter.chapterId]
                     val unchanged = !force &&
@@ -130,7 +130,7 @@ class LibrarySearchRepository(
             matchQuery = matchQuery,
             titleId = titleId,
             limit = limit.coerceIn(1, SEARCH_RESULT_LIMIT),
-        ).map(LibrarySearchResultRow::toModel)
+        ).map { row -> row.toModel() }
     }
 
     private fun LibrarySearchResultRow.toModel(): LibrarySearchResult =
