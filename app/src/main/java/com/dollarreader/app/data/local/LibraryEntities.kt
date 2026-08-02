@@ -201,3 +201,40 @@ data class ChapterPositionEntity(
     val progress: Float,
     val updatedAt: Long,
 )
+
+@Entity(
+    tableName = "reading_annotations",
+    foreignKeys = [
+        ForeignKey(
+            entity = TitleEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["titleId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = ChapterEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["chapterId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [
+        Index(value = ["titleId"]),
+        Index(value = ["chapterId"]),
+        Index(value = ["chapterId", "paragraphIndex"]),
+    ],
+)
+data class ReadingAnnotationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val titleId: String,
+    val chapterId: String,
+    val paragraphIndex: Int,
+    val startOffset: Int,
+    val endOffset: Int,
+    val selectedText: String,
+    val type: String,
+    val noteText: String?,
+    val color: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+)

@@ -17,8 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UpdateHistoryEntity::class,
         ReaderPreferencesEntity::class,
         ChapterPositionEntity::class,
+        ReadingAnnotationEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class DollarReaderDatabase : RoomDatabase() {
@@ -113,6 +114,42 @@ abstract class DollarReaderDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `reading_annotations` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `titleId` TEXT NOT NULL,
+                        `chapterId` TEXT NOT NULL,
+                        `paragraphIndex` INTEGER NOT NULL,
+                        `startOffset` INTEGER NOT NULL,
+                        `endOffset` INTEGER NOT NULL,
+                        `selectedText` TEXT NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `noteText` TEXT,
+                        `color` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`titleId`) REFERENCES `titles`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`chapterId`) REFERENCES `chapters`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_reading_annotations_titleId` ON `reading_annotations` (`titleId`)",
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_reading_annotations_chapterId` ON `reading_annotations` (`chapterId`)",
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_reading_annotations_chapterId_paragraphIndex` ON `reading_annotations` (`chapterId`, `paragraphIndex`)",
+                )
+            }
+        }
+
         fun getInstance(context: Context): DollarReaderDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -120,7 +157,7 @@ abstract class DollarReaderDatabase : RoomDatabase() {
                     DollarReaderDatabase::class.java,
                     "dollarreader.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }

@@ -1,6 +1,13 @@
 package com.dollarreader.app.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,21 +18,29 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,8 +49,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,11 +64,19 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +86,9 @@ import com.dollarreader.app.model.ReaderChapterContent
 import com.dollarreader.app.model.ReaderColorTheme
 import com.dollarreader.app.model.ReaderFontOption
 import com.dollarreader.app.model.ReaderPreferences
+import com.dollarreader.app.model.ReaderTextSelection
+import com.dollarreader.app.model.ReadingAnnotation
+import com.dollarreader.app.model.ReadingAnnotationType
 import com.dollarreader.app.ui.components.ReaderSettingsControls
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -81,6 +109,7 @@ fun ReaderScreen(
     chapter: ReaderChapterContent?,
     preferences: ReaderPreferences,
     initialPosition: ChapterReadingPosition?,
+    annotations: List<ReadingAnnotation>,
     canGoPrevious: Boolean,
     canGoNext: Boolean,
     onBack: () -> Unit,
@@ -88,19 +117,34 @@ fun ReaderScreen(
     onPositionChange: (ChapterReadingPosition) -> Unit,
     onPreviousChapter: (ChapterReadingPosition?) -> Unit,
     onNextChapter: (ChapterReadingPosition?) -> Unit,
+    onAddHighlight: (ReaderTextSelection) -> Unit,
+    onAddNote: (ReaderTextSelection, String) -> Unit,
+    onDeleteAnnotation: (Long) -> Unit,
 ) {
+    val context = LocalContext.current
     val chapterTitle = chapter?.title ?: "Глава ${book.currentChapter}"
     val paragraphs = remember(chapter?.id, chapter?.text) {
         chapter?.text?.toReaderParagraphs(chapterTitle).orEmpty().ifEmpty { previewParagraphs }
+    }
+    val annotationsByParagraph = remember(annotations) {
+        annotations.groupBy { it.paragraphIndex }
     }
     val listState = rememberLazyListState()
     val palette = readerPalette(preferences.colorTheme)
     val fontFamily = preferences.font.toFontFamily()
     val swipeThresholdPx = with(LocalDensity.current) { SWIPE_THRESHOLD_DP.dp.toPx() }
     var showSettings by remember { mutableStateOf(false) }
+    var showAnnotations by remember(chapter?.id) { mutableStateOf(false) }
     var restoredChapterId by remember { mutableStateOf<String?>(null) }
     var navigationRequestedForChapter by remember { mutableStateOf<String?>(null) }
     var hasUserScrolled by remember(chapter?.id) { mutableStateOf(false) }
+    var selectedText by remember(chapter?.id) {
+        mutableStateOf<ReaderTextSelection?>(null)
+    }
+    var pendingNoteSelection by remember(chapter?.id) {
+        mutableStateOf<ReaderTextSelection?>(null)
+    }
+    var noteDraft by remember(chapter?.id) { mutableStateOf("") }
     var chapterProgress by remember(chapter?.id, initialPosition?.progress) {
         mutableFloatStateOf(initialPosition?.progress ?: 0f)
     }
@@ -143,6 +187,7 @@ fun ReaderScreen(
         if (!forward && !canGoPrevious) return
 
         navigationRequestedForChapter = currentChapter.id
+        selectedText = null
         val position = currentPosition()
         if (forward) {
             onNextChapter(position)
@@ -154,6 +199,9 @@ fun ReaderScreen(
     LaunchedEffect(chapter?.id) {
         navigationRequestedForChapter = null
         hasUserScrolled = false
+        selectedText = null
+        pendingNoteSelection = null
+        showAnnotations = false
     }
 
     LaunchedEffect(
@@ -200,6 +248,57 @@ fun ReaderScreen(
         }
     }
 
+    pendingNoteSelection?.let { selection ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingNoteSelection = null
+                noteDraft = ""
+            },
+            title = { Text("Новая заметка") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        selection.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = noteDraft,
+                        onValueChange = { noteDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Текст заметки") },
+                        minLines = 3,
+                        maxLines = 7,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onAddNote(selection, noteDraft.trim())
+                        pendingNoteSelection = null
+                        selectedText = null
+                        noteDraft = ""
+                        Toast.makeText(context, "Заметка сохранена", Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = noteDraft.isNotBlank(),
+                ) {
+                    Text("Сохранить")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingNoteSelection = null
+                        noteDraft = ""
+                    },
+                ) {
+                    Text("Отмена")
+                }
+            },
+        )
+    }
+
     if (showSettings) {
         ModalBottomSheet(
             onDismissRequest = { showSettings = false },
@@ -220,6 +319,53 @@ fun ReaderScreen(
                     preferences = preferences,
                     onPreferencesChange = onPreferencesChange,
                 )
+            }
+        }
+    }
+
+    if (showAnnotations) {
+        ModalBottomSheet(
+            onDismissRequest = { showAnnotations = false },
+            containerColor = palette.background,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            ) {
+                Text(
+                    "Заметки и выделения",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = palette.text,
+                )
+                Text(
+                    chapterTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.secondaryText,
+                    modifier = Modifier.padding(top = 3.dp, bottom = 12.dp),
+                )
+                if (annotations.isEmpty()) {
+                    Text(
+                        "В этой главе пока ничего не сохранено.",
+                        color = palette.secondaryText,
+                        modifier = Modifier.padding(vertical = 24.dp),
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 520.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(annotations, key = { it.id }) { annotation ->
+                            AnnotationCard(
+                                annotation = annotation,
+                                palette = palette,
+                                onDelete = {
+                                    onDeleteAnnotation(annotation.id)
+                                },
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -265,11 +411,11 @@ fun ReaderScreen(
                         maxLines = 1,
                     )
                 }
-                IconButton(onClick = { }) {
+                IconButton(onClick = { showAnnotations = true }) {
                     Icon(
                         Icons.Outlined.BookmarkBorder,
-                        contentDescription = "Закладка",
-                        tint = palette.text,
+                        contentDescription = "Заметки и выделения: ${annotations.size}",
+                        tint = if (annotations.isEmpty()) palette.text else palette.accent,
                     )
                 }
                 IconButton(onClick = { showSettings = true }) {
@@ -281,29 +427,35 @@ fun ReaderScreen(
                 }
             }
 
+            val swipeModifier = if (selectedText == null) {
+                Modifier.pointerInput(chapter?.id, canGoPrevious, canGoNext) {
+                    var horizontalDistance = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { horizontalDistance = 0f },
+                        onHorizontalDrag = { _, dragAmount ->
+                            horizontalDistance += dragAmount
+                        },
+                        onDragCancel = { horizontalDistance = 0f },
+                        onDragEnd = {
+                            when {
+                                horizontalDistance <= -swipeThresholdPx ->
+                                    requestChapterNavigation(forward = true)
+                                horizontalDistance >= swipeThresholdPx ->
+                                    requestChapterNavigation(forward = false)
+                            }
+                            horizontalDistance = 0f
+                        },
+                    )
+                }
+            } else {
+                Modifier
+            }
+
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .pointerInput(chapter?.id, canGoPrevious, canGoNext) {
-                        var horizontalDistance = 0f
-                        detectHorizontalDragGestures(
-                            onDragStart = { horizontalDistance = 0f },
-                            onHorizontalDrag = { _, dragAmount ->
-                                horizontalDistance += dragAmount
-                            },
-                            onDragCancel = { horizontalDistance = 0f },
-                            onDragEnd = {
-                                when {
-                                    horizontalDistance <= -swipeThresholdPx ->
-                                        requestChapterNavigation(forward = true)
-                                    horizontalDistance >= swipeThresholdPx ->
-                                        requestChapterNavigation(forward = false)
-                                }
-                                horizontalDistance = 0f
-                            },
-                        )
-                    },
+                    .then(swipeModifier),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 LazyColumn(
@@ -346,30 +498,52 @@ fun ReaderScreen(
                     itemsIndexed(
                         items = paragraphs,
                         key = { index, _ -> "paragraph-$index" },
-                    ) { _, paragraph ->
-                        Text(
-                            text = paragraph,
-                            style = TextStyle(
-                                fontFamily = fontFamily,
-                                fontSize = preferences.fontSizeSp.sp,
-                                lineHeight = (
-                                    preferences.fontSizeSp *
-                                        preferences.lineHeightMultiplier
-                                    ).sp,
-                                textIndent = TextIndent(
-                                    firstLine = (
-                                        preferences.fontSizeSp *
-                                            preferences.firstLineIndentEm
-                                        ).sp,
-                                ),
-                                color = palette.text,
-                            ),
+                    ) { index, paragraph ->
+                        SelectableParagraph(
+                            paragraph = paragraph,
+                            paragraphIndex = index,
+                            annotations = annotationsByParagraph[index].orEmpty(),
+                            activeSelection = selectedText,
+                            fontFamily = fontFamily,
+                            preferences = preferences,
+                            palette = palette,
+                            onSelectionChange = { selectedText = it },
                         )
                     }
                     item(key = "bottom-spacer") {
                         Spacer(Modifier.height(16.dp))
                     }
                 }
+            }
+
+            selectedText?.let { selection ->
+                SelectionActionBar(
+                    selection = selection,
+                    palette = palette,
+                    onCopy = {
+                        copyText(context, selection.text)
+                        selectedText = null
+                    },
+                    onHighlight = {
+                        onAddHighlight(selection)
+                        selectedText = null
+                        Toast.makeText(context, "Текст подсвечен", Toast.LENGTH_SHORT).show()
+                    },
+                    onNote = {
+                        noteDraft = ""
+                        pendingNoteSelection = selection
+                    },
+                    onDictionary = {
+                        openExternalUrl(context, dictionaryUrl(selection.text))
+                    },
+                    onSearch = {
+                        openExternalUrl(context, searchUrl(selection.text))
+                    },
+                    onTranslate = {
+                        openExternalUrl(context, translateUrl(selection.text))
+                    },
+                    onClose = { selectedText = null },
+                )
             }
 
             Card(
@@ -461,6 +635,243 @@ fun ReaderScreen(
         }
     }
 }
+
+@Composable
+private fun SelectableParagraph(
+    paragraph: String,
+    paragraphIndex: Int,
+    annotations: List<ReadingAnnotation>,
+    activeSelection: ReaderTextSelection?,
+    fontFamily: FontFamily,
+    preferences: ReaderPreferences,
+    palette: ReaderPalette,
+    onSelectionChange: (ReaderTextSelection?) -> Unit,
+) {
+    val annotatedText = remember(paragraph, annotations) {
+        paragraph.withAnnotations(annotations)
+    }
+    val selectedRange = activeSelection
+        ?.takeIf { it.paragraphIndex == paragraphIndex }
+        ?.let { selection ->
+            TextRange(
+                start = selection.startOffset.coerceIn(0, paragraph.length),
+                end = selection.endOffset.coerceIn(0, paragraph.length),
+            )
+        }
+        ?: TextRange.Zero
+    val value = TextFieldValue(
+        annotatedString = annotatedText,
+        selection = selectedRange,
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        BasicTextField(
+            value = value,
+            onValueChange = { updated ->
+                val start = minOf(updated.selection.start, updated.selection.end)
+                    .coerceIn(0, paragraph.length)
+                val end = maxOf(updated.selection.start, updated.selection.end)
+                    .coerceIn(0, paragraph.length)
+                if (end > start) {
+                    onSelectionChange(
+                        ReaderTextSelection(
+                            paragraphIndex = paragraphIndex,
+                            startOffset = start,
+                            endOffset = end,
+                            text = paragraph.substring(start, end),
+                        ),
+                    )
+                } else if (activeSelection?.paragraphIndex == paragraphIndex) {
+                    onSelectionChange(null)
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            readOnly = true,
+            textStyle = TextStyle(
+                fontFamily = fontFamily,
+                fontSize = preferences.fontSizeSp.sp,
+                lineHeight = (
+                    preferences.fontSizeSp *
+                        preferences.lineHeightMultiplier
+                    ).sp,
+                textIndent = TextIndent(
+                    firstLine = (
+                        preferences.fontSizeSp *
+                            preferences.firstLineIndentEm
+                        ).sp,
+                ),
+                color = palette.text,
+            ),
+            cursorBrush = SolidColor(palette.accent),
+        )
+        val noteCount = annotations.count { it.type == ReadingAnnotationType.NOTE }
+        if (noteCount > 0) {
+            Text(
+                text = if (noteCount == 1) "Заметка" else "Заметок: $noteCount",
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.accent,
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectionActionBar(
+    selection: ReaderTextSelection,
+    palette: ReaderPalette,
+    onCopy: () -> Unit,
+    onHighlight: () -> Unit,
+    onNote: () -> Unit,
+    onDictionary: () -> Unit,
+    onSearch: () -> Unit,
+    onTranslate: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = palette.surface),
+    ) {
+        Column(Modifier.padding(vertical = 6.dp)) {
+            Text(
+                text = selection.text.replace('\n', ' '),
+                maxLines = 2,
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.secondaryText,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onCopy) { Text("Копировать", color = palette.accent) }
+                TextButton(onClick = onHighlight) { Text("Подсветить", color = palette.accent) }
+                TextButton(onClick = onNote) { Text("Заметка", color = palette.accent) }
+                TextButton(onClick = onDictionary) { Text("Словарь", color = palette.accent) }
+                TextButton(onClick = onSearch) { Text("Google", color = palette.accent) }
+                TextButton(onClick = onTranslate) { Text("Перевести", color = palette.accent) }
+                IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "Снять выделение",
+                        tint = palette.secondaryText,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnnotationCard(
+    annotation: ReadingAnnotation,
+    palette: ReaderPalette,
+    onDelete: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = palette.surface),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    if (annotation.type == ReadingAnnotationType.NOTE) {
+                        "Заметка · абзац ${annotation.paragraphIndex + 1}"
+                    } else {
+                        "Выделение · абзац ${annotation.paragraphIndex + 1}"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.accent,
+                )
+                Text(
+                    annotation.selectedText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.text,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                annotation.noteText?.let { note ->
+                    Text(
+                        note,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.secondaryText,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Удалить",
+                    tint = palette.secondaryText,
+                )
+            }
+        }
+    }
+}
+
+private fun String.withAnnotations(annotations: List<ReadingAnnotation>): AnnotatedString =
+    buildAnnotatedString {
+        append(this@withAnnotations)
+        annotations.forEach { annotation ->
+            val start = annotation.startOffset.coerceIn(0, length)
+            val end = annotation.endOffset.coerceIn(0, length)
+            if (
+                end > start &&
+                substring(start, end) == annotation.selectedText
+            ) {
+                val style = when (annotation.type) {
+                    ReadingAnnotationType.HIGHLIGHT -> SpanStyle(
+                        background = Color(0x66FFD54F),
+                    )
+                    ReadingAnnotationType.NOTE -> SpanStyle(
+                        background = Color(0x447E57C2),
+                        textDecoration = TextDecoration.Underline,
+                    )
+                }
+                addStyle(style, start, end)
+            }
+        }
+    }
+
+private fun copyText(context: Context, text: String) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    clipboard?.setPrimaryClip(ClipData.newPlainText("DollarReader", text))
+    Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+}
+
+private fun openExternalUrl(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(
+                context,
+                "Не найдено приложение для открытия ссылки",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+}
+
+private fun dictionaryUrl(text: String): String =
+    "https://www.google.com/search?q=${Uri.encode("define:$text")}" 
+
+private fun searchUrl(text: String): String =
+    "https://www.google.com/search?q=${Uri.encode(text)}"
+
+private fun translateUrl(text: String): String =
+    "https://translate.google.com/?sl=auto&tl=ru&text=${Uri.encode(text)}&op=translate"
 
 private fun ReaderFontOption.toFontFamily(): FontFamily = when (this) {
     ReaderFontOption.DEFAULT -> FontFamily.Default

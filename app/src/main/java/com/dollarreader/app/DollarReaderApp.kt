@@ -35,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dollarreader.app.data.AnnotationRepository
 import com.dollarreader.app.data.ChapterNavigationRepository
 import com.dollarreader.app.data.LibraryRepository
 import com.dollarreader.app.data.ReaderSettingsRepository
@@ -46,6 +47,7 @@ import com.dollarreader.app.data.local.DollarReaderDatabase
 import com.dollarreader.app.model.ChapterReadingPosition
 import com.dollarreader.app.model.ReaderChapterContent
 import com.dollarreader.app.model.ReaderPreferences
+import com.dollarreader.app.model.ReadingAnnotation
 import com.dollarreader.app.ui.screens.BookDetailsScreen
 import com.dollarreader.app.ui.screens.HomeScreen
 import com.dollarreader.app.ui.screens.LibraryScreen
@@ -53,6 +55,7 @@ import com.dollarreader.app.ui.screens.ReaderScreen
 import com.dollarreader.app.ui.screens.SettingsScreen
 import com.dollarreader.app.ui.screens.WelcomeScreen
 import com.dollarreader.app.ui.theme.DollarReaderTheme
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 private object Routes {
@@ -87,6 +90,9 @@ fun DollarReaderApp() {
     }
     val chapterNavigationRepository = remember(database) {
         ChapterNavigationRepository(database)
+    }
+    val annotationRepository = remember(database) {
+        AnnotationRepository(database)
     }
     val localBookService = remember(context, repository) {
         LocalBookService(context, repository)
@@ -316,12 +322,21 @@ fun DollarReaderApp() {
                                 readerSettingsRepository.loadPosition(it)
                             }
                         }
+                        val annotations by produceState<List<ReadingAnnotation>>(
+                            initialValue = emptyList(),
+                            key1 = chapter?.id,
+                        ) {
+                            val chapterId = chapter?.id ?: return@produceState
+                            annotationRepository.observeChapterAnnotations(chapterId)
+                                .collect { value = it }
+                        }
 
                         ReaderScreen(
                             book = book,
                             chapter = chapter,
                             preferences = readerPreferences,
                             initialPosition = initialPosition,
+                            annotations = annotations,
                             canGoPrevious = book.currentChapter > 1,
                             canGoNext = book.currentChapter < book.totalChapters,
                             onBack = { navController.popBackStack() },
@@ -377,6 +392,36 @@ fun DollarReaderApp() {
                                             forward = true,
                                         )
                                     }
+                                }
+                            },
+                            onAddHighlight = { selection ->
+                                val currentChapter = chapter
+                                if (currentChapter != null) {
+                                    scope.launch {
+                                        annotationRepository.addHighlight(
+                                            titleId = book.id,
+                                            chapterId = currentChapter.id,
+                                            selection = selection,
+                                        )
+                                    }
+                                }
+                            },
+                            onAddNote = { selection, note ->
+                                val currentChapter = chapter
+                                if (currentChapter != null) {
+                                    scope.launch {
+                                        annotationRepository.addNote(
+                                            titleId = book.id,
+                                            chapterId = currentChapter.id,
+                                            selection = selection,
+                                            noteText = note,
+                                        )
+                                    }
+                                }
+                            },
+                            onDeleteAnnotation = { annotationId ->
+                                scope.launch {
+                                    annotationRepository.deleteAnnotation(annotationId)
                                 }
                             },
                         )

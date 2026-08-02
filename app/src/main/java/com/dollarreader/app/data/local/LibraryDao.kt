@@ -61,6 +61,15 @@ interface LibraryDao {
     @Query("SELECT * FROM reader_preferences WHERE id = 0 LIMIT 1")
     fun observeReaderPreferences(): Flow<ReaderPreferencesEntity?>
 
+    @Query(
+        """
+        SELECT * FROM reading_annotations
+        WHERE chapterId = :chapterId
+        ORDER BY paragraphIndex, startOffset, createdAt
+        """,
+    )
+    fun observeReadingAnnotations(chapterId: String): Flow<List<ReadingAnnotationEntity>>
+
     @Query("SELECT * FROM titles WHERE id = :titleId LIMIT 1")
     suspend fun titleById(titleId: String): TitleEntity?
 
@@ -99,6 +108,9 @@ interface LibraryDao {
 
     @Insert
     suspend fun insertUpdateHistory(history: UpdateHistoryEntity): Long
+
+    @Insert
+    suspend fun insertReadingAnnotation(annotation: ReadingAnnotationEntity): Long
 
     @Upsert
     suspend fun upsertTitle(title: TitleEntity)
@@ -156,6 +168,27 @@ interface LibraryDao {
 
     @Query("DELETE FROM titles WHERE id = :titleId")
     suspend fun deleteTitleById(titleId: String): Int
+
+    @Query("DELETE FROM reading_annotations WHERE id = :annotationId")
+    suspend fun deleteReadingAnnotation(annotationId: Long): Int
+
+    @Query(
+        """
+        DELETE FROM reading_annotations
+        WHERE chapterId = :chapterId
+          AND paragraphIndex = :paragraphIndex
+          AND startOffset = :startOffset
+          AND endOffset = :endOffset
+          AND type = :type
+        """,
+    )
+    suspend fun deleteReadingAnnotationAtRange(
+        chapterId: String,
+        paragraphIndex: Int,
+        startOffset: Int,
+        endOffset: Int,
+        type: String,
+    )
 
     @Query(
         """
