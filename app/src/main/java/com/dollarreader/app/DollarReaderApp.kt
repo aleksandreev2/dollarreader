@@ -1,5 +1,6 @@
 package com.dollarreader.app
 
+import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -36,8 +37,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dollarreader.app.data.LibraryRepository
 import com.dollarreader.app.data.importer.FolderBookImporter
-import com.dollarreader.app.data.importer.LocalBookImporter
-import com.dollarreader.app.data.importer.LocalBookPreviewer
+import com.dollarreader.app.data.importer.ImportPreview
+import com.dollarreader.app.data.importer.ImportResult
+import com.dollarreader.app.data.importer.LocalBookService
 import com.dollarreader.app.data.local.DollarReaderDatabase
 import com.dollarreader.app.model.ReaderChapterContent
 import com.dollarreader.app.ui.screens.BookDetailsScreen
@@ -73,9 +75,12 @@ fun DollarReaderApp() {
     val repository = remember(context) {
         LibraryRepository(DollarReaderDatabase.getInstance(context))
     }
-    val importer = remember(context, repository) { LocalBookImporter(context, repository) }
-    val previewer = remember(context, repository) { LocalBookPreviewer(context, repository) }
-    val folderImporter = remember(context, repository) { FolderBookImporter(context, repository) }
+    val localBookService = remember(context, repository) {
+        LocalBookService(context, repository)
+    }
+    val folderImporter = remember(context, repository) {
+        FolderBookImporter(context, repository)
+    }
     val books by repository.books.collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
@@ -147,8 +152,8 @@ fun DollarReaderApp() {
                     LibraryScreen(
                         books = books,
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
-                        onPreviewImport = previewer::previewBook,
-                        onImport = importer::importBook,
+                        onPreviewImport = localBookService::previewBook,
+                        onImport = localBookService::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
                         onImportFolder = folderImporter::importFolder,
                     )
@@ -157,8 +162,8 @@ fun DollarReaderApp() {
                     LibraryScreen(
                         books = books.filter { it.totalChapters > 0 },
                         onBookClick = { book -> navController.navigate(Routes.book(book.id)) },
-                        onPreviewImport = previewer::previewBook,
-                        onImport = importer::importBook,
+                        onPreviewImport = localBookService::previewBook,
+                        onImport = localBookService::importBook,
                         onPreviewFolder = folderImporter::previewFolder,
                         onImportFolder = folderImporter::importFolder,
                     )
@@ -180,6 +185,28 @@ fun DollarReaderApp() {
                     } else {
                         val contents by repository.observeBookContents(book.id)
                             .collectAsState(initial = null)
+                        val storedTitle by repository.observeTitle(book.id)
+                            .collectAsState(initial = null)
+                        val sourceUri = storedTitle?.title?.sourceUri?.let(Uri::parse)
+                        val sourceFormat = storedTitle?.title?.format
+
+                        val previewUpdateAction: (suspend () -> ImportPreview)? =
+                            sourceUri?.let { uri ->
+                                when (sourceFormat) {
+                                    "ZIP/TXT" -> suspend { localBookService.previewBook(uri) }
+                                    "ПАПКА/TXT" -> suspend { folderImporter.previewFolder(uri) }
+                                    else -> null
+                                }
+                            }
+                        val applyUpdateAction: (suspend () -> ImportResult)? =
+                            sourceUri?.let { uri ->
+                                when (sourceFormat) {
+                                    "ZIP/TXT" -> suspend { localBookService.importBook(uri) }
+                                    "ПАПКА/TXT" -> suspend { folderImporter.importFolder(uri) }
+                                    else -> null
+                                }
+                            }
+
                         BookDetailsScreen(
                             book = book,
                             contents = contents,
@@ -191,6 +218,8 @@ fun DollarReaderApp() {
                                     navController.navigate(Routes.reader(book.id))
                                 }
                             },
+                            onPreviewUpdate = previewUpdateAction,
+                            onApplyUpdate = applyUpdateAction,
                         )
                     }
                 }
