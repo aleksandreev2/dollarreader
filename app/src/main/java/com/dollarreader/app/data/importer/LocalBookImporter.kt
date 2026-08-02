@@ -82,7 +82,7 @@ class LocalBookImporter(
             ),
         )
         val updated = repository.importLocalTitle(plan)
-        ImportResult(
+        return ImportResult(
             titleId = titleId,
             title = title,
             chaptersImported = 1,
