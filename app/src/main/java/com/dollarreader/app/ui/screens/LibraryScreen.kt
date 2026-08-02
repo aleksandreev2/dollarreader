@@ -179,7 +179,7 @@ fun LibraryScreen(
                     onDismissRequest = { addMenuExpanded = false },
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Файл TXT или ZIP") },
+                        text = { Text("Файл TXT, ZIP, EPUB или HTML") },
                         leadingIcon = {
                             Icon(Icons.Outlined.Description, contentDescription = null)
                         },
@@ -190,6 +190,9 @@ fun LibraryScreen(
                                     "text/plain",
                                     "application/zip",
                                     "application/x-zip-compressed",
+                                    "application/epub+zip",
+                                    "text/html",
+                                    "application/xhtml+xml",
                                     "application/octet-stream",
                                 ),
                             )
@@ -218,7 +221,7 @@ fun LibraryScreen(
 
         if (books.isEmpty()) {
             Text(
-                text = "Нажмите «Добавить», чтобы выбрать файл или папку с TXT-главами",
+                text = "Нажмите «Добавить», чтобы выбрать TXT, ZIP, EPUB, HTML или папку с главами",
                 modifier = Modifier.padding(top = 32.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -245,7 +248,7 @@ private fun ImportPreviewDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    val detailedDiff = preview.format == "ПАПКА/TXT" || preview.format == "ZIP/TXT"
+    val detailedDiff = preview.format in DETAILED_IMPORT_FORMATS
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -413,7 +416,7 @@ private fun ImportChapterChange.label(): String = when (this) {
 }
 
 private fun ImportResult.successMessage(): String {
-    val hasDetailedDiff = format == "ПАПКА/TXT" || format == "ZIP/TXT"
+    val hasDetailedDiff = format in DETAILED_IMPORT_FORMATS
     if (!hasDetailedDiff) {
         val action = if (updatedExistingTitle) "обновлён" else "добавлен"
         return "$title: $action, глав — $chaptersImported"
@@ -484,4 +487,11 @@ private data class PendingImport(
 private data class ImportNotice(
     val message: String,
     val isError: Boolean,
+)
+
+private val DETAILED_IMPORT_FORMATS = setOf(
+    "ПАПКА/TXT",
+    "ZIP/TXT",
+    "EPUB",
+    "HTML",
 )
